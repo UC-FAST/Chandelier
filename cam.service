@@ -1,0 +1,14 @@
+[Unit]
+Description=Start Camera After Power On
+After=network.target
+
+
+[Service]
+WorkingDirectory=/home/pi/ceee-cam-software/
+Type=forking
+User=pi
+ExecStart=python3 startup.py
+TimeoutSec=0
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,522 @@
+{
+    "CameraControlledEnd": {
+        "0": {
+            "title": "Settings",
+            "options": [
+                {
+                    "id": "camera settings",
+                    "content": "Camera Settings",
+                    "type": "menu",
+                    "value": "Camera Settings"
+                },
+                {
+                    "id": "gallery",
+                    "content": "Gallery",
+                    "type": "irq",
+                    "value": "GalleryControlledEnd"
+                },
+                {
+                    "content": "System Monitor",
+                    "type": "irq",
+                    "value": "SystemMonitor"
+                }
+            ]
+        },
+        "Camera Settings": {
+            "title": "Camera Settings",
+            "options": [
+                {
+                    "id": "exposure",
+                    "content": "Exposure",
+                    "type": "menu",
+                    "value": "exposure"
+                },
+                {
+                    "content": "Focus",
+                    "type": "Menu",
+                    "value": "focus"
+                },
+                {
+                    "content": "White Balance",
+                    "type": "menu",
+                    "value": "white balance"
+                },
+                {
+                    "id": "hdr",
+                    "content": "HDR",
+                    "type": "option",
+                    "value": {
+                        "content": "Off",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Off",
+                            "value": 0
+                        },
+                        {
+                            "content": "MultiExposureUnmerged",
+                            "value": 1
+                        },
+                        {
+                            "content": "MultiExposure",
+                            "value": 2
+                        },
+                        {
+                            "content": "SingleExposure",
+                            "value": 3
+                        },
+                        {
+                            "content": "Night",
+                            "value": 4
+                        }
+                    ]
+                },
+                {
+                    "id": "delay",
+                    "content": "Delay",
+                    "type": "numeral",
+                    "value": 0,
+                    "min": 0,
+                    "max": 30,
+                    "step": 1
+                },
+                {
+                    "id": "resolution",
+                    "content": "Resolution",
+                    "type": "option",
+                    "value": {
+                        "content": "Full Resolution",
+                        "value": [
+                            4608,
+                            2592
+                        ]
+                    },
+                    "options": [
+                        {
+                            "content": "640x480",
+                            "value": [
+                                640,
+                                480
+                            ]
+                        },
+                        {
+                            "content": "800x600",
+                            "value": [
+                                800,
+                                600
+                            ]
+                        },
+                        {
+                            "content": "1024x768",
+                            "value": [
+                                1024,
+                                768
+                            ]
+                        },
+                        {
+                            "content": "1280x720",
+                            "value": [
+                                1280,
+                                720
+                            ]
+                        },
+                        {
+                            "content": "1280x960",
+                            "value": [
+                                1280,
+                                960
+                            ]
+                        },
+                        {
+                            "content": "1920x1080",
+                            "value": [
+                                1920,
+                                1080
+                            ]
+                        },
+                        {
+                            "content": "2560x1920",
+                            "value": [
+                                2560,
+                                1920
+                            ]
+                        },
+                        {
+                            "content": "Full Resolution",
+                            "value": [
+                                4608,
+                                2592
+                            ]
+                        }
+                    ]
+                },
+                {
+                    "id": "pict format",
+                    "content": "Pict Format",
+                    "type": "option",
+                    "value": {
+                        "content": "JPEG",
+                        "value": "jpeg"
+                    },
+                    "options": [
+                        {
+                            "content": "PNG",
+                            "value": "png"
+                        },
+                        {
+                            "content": "BMP",
+                            "value": "bmp"
+                        },
+                        {
+                            "content": "TIFF",
+                            "value": "tiff"
+                        },
+                        {
+                            "content": "JPEG",
+                            "value": "jpeg"
+                        }
+                    ]
+                },
+                {
+                    "id": "save metadata",
+                    "content": "Save Metadata",
+                    "type": "bool",
+                    "value": false
+                },
+                {
+                    "id": "dng enable",
+                    "content": "DNG Enable",
+                    "type": "bool",
+                    "value": false
+                },
+                {
+                    "id": "watermark",
+                    "content": "Watermark",
+                    "type": "bool",
+                    "value": false
+                }
+            ]
+        },
+        "exposure": {
+            "title": "Exposure",
+            "options": [
+                {
+                    "id": "auto expose",
+                    "content": "Auto Expose",
+                    "type": "bool",
+                    "value": true,
+                    "setDisable": [
+                        "exposure time",
+                        "analogue gain"
+                    ],
+                    "setEnable": [
+                        "exposure mode",
+                        "metering mode",
+                        "flicker",
+                        "constraint mode"
+                    ]
+                },
+                {
+                    "id": "exposure mode",
+                    "content": "Auto Exposure Mode",
+                    "type": "option",
+                    "value": {
+                        "content": "Normal",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Normal",
+                            "value": 0
+                        },
+                        {
+                            "content": "Short",
+                            "value": 1
+                        },
+                        {
+                            "content": "Long",
+                            "value": 2
+                        },
+                        {
+                            "content": "Custom",
+                            "value": 3
+                        }
+                    ],
+                    "enable": true
+                },
+                {
+                    "id": "constraint mode",
+                    "content": "Constraint Mode",
+                    "type": "option",
+                    "value": {
+                        "content": "Normal",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Normal",
+                            "value": 0
+                        },
+                        {
+                            "content": "Highlight",
+                            "value": 1
+                        },
+                        {
+                            "content": "Shadows",
+                            "value": 2
+                        },
+                        {
+                            "content": "Custom",
+                            "value": 3
+                        }
+                    ],
+                    "enable": true
+                },
+                {
+                    "id": "metering mode",
+                    "content": "Metering Mode",
+                    "type": "option",
+                    "value": {
+                        "content": "Centre Weighted",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Centre Weighted",
+                            "value": 0
+                        },
+                        {
+                            "content": "Spot",
+                            "value": 1
+                        },
+                        {
+                            "content": "Matrix",
+                            "value": 2
+                        },
+                        {
+                            "content": "Customer",
+                            "value": 3
+                        }
+                    ],
+                    "enable": true
+                },
+                {
+                    "id": "show hist",
+                    "content": "Show Histogram",
+                    "type": "bool",
+                    "value": false
+                },
+                {
+                    "id": "flicker",
+                    "content": "Flicker",
+                    "type": "menu",
+                    "value": "flicker menu",
+                    "enable": true
+                },
+                {
+                    "id": "exposure time",
+                    "content": "Exposure Time",
+                    "type": "numeral",
+                    "value": 1,
+                    "min": 1,
+                    "max": 66666,
+                    "step": 10000,
+                    "stepOptions": [
+                        100,
+                        1000,
+                        10000
+                    ],
+                    "enable": false
+                },
+                {
+                    "id": "analogue gain",
+                    "content": "Analogue Gain",
+                    "type": "numeral",
+                    "value": 16,
+                    "min": 1,
+                    "max": 16,
+                    "step": 1,
+                    "stepOptions": [
+                        1,
+                        10
+                    ],
+                    "enable": false
+                }
+            ]
+        },
+        "flicker menu": {
+            "title": "Flicker",
+            "options": [
+                {
+                    "id": "flicker mode",
+                    "content": "Flicker Mode",
+                    "type": "option",
+                    "value": {
+                        "content": "Off",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Off",
+                            "value": 0
+                        },
+                        {
+                            "content": "Manual",
+                            "value": 1
+                        }
+                    ]
+                },
+                {
+                    "id": "flicker period",
+                    "content": "Flicker Period",
+                    "type": "option",
+                    "value": {
+                        "content": "50Hz",
+                        "value": 10000
+                    },
+                    "options": [
+                        {
+                            "content": "50Hz",
+                            "value": 10000
+                        },
+                        {
+                            "content": "60Hz",
+                            "value": 8333
+                        }
+                    ]
+                }
+            ]
+        },
+        "focus": {
+            "title": "Focus",
+            "options": [
+                {
+                    "id": "mf assist",
+                    "content": "MF Assist",
+                    "type": "bool",
+                    "value": true
+                }
+            ]
+        },
+        "white balance": {
+            "title": "White Balance",
+            "options": [
+                {
+                    "id": "awb",
+                    "content": "Auto White Balance",
+                    "type": "bool",
+                    "value": true,
+                    "setEnable": [
+                        "awb mode"
+                    ],
+                    "setDisable": [
+                        "color gains"
+                    ]
+                },
+                {
+                    "id": "awb mode",
+                    "content": "Auto White Balance Mode",
+                    "type": "option",
+                    "value": {
+                        "content": "Auto",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Auto",
+                            "value": 0
+                        },
+                        {
+                            "content": "Incandescent",
+                            "value": 1
+                        },
+                        {
+                            "content": "Tungsten",
+                            "value": 2
+                        },
+                        {
+                            "content": "Fluorescent",
+                            "value": 3
+                        },
+                        {
+                            "content": "Indoor",
+                            "value": 4
+                        },
+                        {
+                            "content": "Daylight",
+                            "value": 5
+                        },
+                        {
+                            "content": "Cloudy",
+                            "value": 6
+                        },
+                        {
+                            "content": "Custom",
+                            "value": 7
+                        }
+                    ],
+                    "enable": true
+                },
+                {
+                    "id": "color gains",
+                    "content": "Color Gains",
+                    "type": "menu",
+                    "value": "color gains",
+                    "enable": false
+                }
+            ]
+        },
+        "color gains": {
+            "title": "Color Gains",
+            "options": [
+                {
+                    "id": "red gain",
+                    "content": "Red Gain",
+                    "type": "numeral",
+                    "value": 23,
+                    "min": 0,
+                    "max": 32,
+                    "step": 1,
+                    "stepOptions": [
+                        0.1,
+                        1
+                    ]
+                },
+                {
+                    "id": "blue gain",
+                    "content": "Blue Gain",
+                    "type": "numeral",
+                    "value": 3,
+                    "min": 0,
+                    "max": 32,
+                    "step": 1,
+                    "stepOptions": [
+                        0.1,
+                        1
+                    ]
+                }
+            ]
+        }
+    },
+    "GalleryControlledEnd": {
+        "0": {
+            "title": "Gallery",
+            "options": [
+                {
+                    "id": "delete",
+                    "content": "Delete",
+                    "type": "msg",
+                    "receiver": "GalleryControlledEnd",
+                    "value": "delete"
+                },
+                {
+                    "id": "show hist",
+                    "content": "Show Hist",
+                    "type": "bool",
+                    "value": false
+                }
+            ]
+        }
+    }
+}

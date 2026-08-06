@@ -1,0 +1,38 @@
+"ExposureTime"
+(1, 66666, 20000)
+
+
+"AeFlickerPeriod"
+(100, 1000000, None)
+
+
+"AnalogueGain"
+Out[8]: (1.0, 16.0, 1.0)
+
+
+"Brightness"
+(-1.0, 1.0, 0.0)
+
+"ColourGains"
+(0.0, 32.0, None)
+
+
+"Contrast"
+0.0 32.0
+
+
+
+"ExposureValue"
+(-8.0, 8.0, 0.0)
+
+
+"FrameDurationLimits"
+(33333, 120000, 33333)
+
+
+ "Saturation"
+0.0 32.0
+
+
+"Sharpness"
+0.0 16.0

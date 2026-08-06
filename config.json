@@ -1,0 +1,47 @@
+{
+    "pin": {
+        "right": 6,
+        "up": 0,
+        "left": 22,
+        "down": 1,
+        "center": 5,
+        "rotaryEncoder1A": 17,
+        "rotaryEncoder1B": 24,
+        "rotaryEncoder1S": 27,
+        "shutter": 16,
+        "cross": 23,
+        "square": 25,
+        "circle": 20,
+        "rst": 19,
+        "dc": 26,
+        "bl": 21
+    },
+    "camera": {
+        "path": "./pict",
+        "video_path": "./pict/video",
+        "video_bitrate": 1000000
+    },
+    "screen": {
+        "width": 320,
+        "height": 240
+    },
+    "led": {
+        "led_green": 12,
+        "led_blue": 13
+    },
+    "sensor": {
+        "BQ32002": {
+            "bus": 1
+        },
+        "INA230": {
+            "bus": 1,
+            "shunt resistance": 0.002,
+            "maximum expected current": 3.2
+        },
+        "MAX17048": {
+            "bus": 1
+        }
+    },
+    "debug_level": 10,
+    "internet test": "http://www.msftconnecttest.com/connecttest.txt"
+}

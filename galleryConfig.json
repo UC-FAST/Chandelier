@@ -1,0 +1,20 @@
+{
+    "0": {
+        "title": "Gallery",
+        "options": [
+            {
+                "id": "delete",
+                "content": "Delete",
+                "type": "msg",
+                "receiver": "GalleryControlledEnd",
+                "value": "delete"
+            },
+            {
+                "id": "show hist",
+                "content": "Show Hist",
+                "type": "bool",
+                "value": false
+            }
+        ]
+    }
+}
