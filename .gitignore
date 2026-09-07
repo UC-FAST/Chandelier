@@ -153,5 +153,4 @@ cython_debug/
 
 **/sslvenv
 pict/
-tests/
 .vscode/
