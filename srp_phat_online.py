@@ -17,7 +17,7 @@ def main(src,microphone_stream):
             waveform.transpose(),
             n_sources=src,
             sample_rate=sample_rate,
-            delay_max=2.0,
+            delay_max=0.0,
             n_delay_bins=50,
             output_all_channels=True,
         )

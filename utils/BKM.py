@@ -1,3 +1,6 @@
+# BKM settings of microphone array
+
+
 bkm = {
     "AECFREEZEONOFF": 0,
     "AECNORM": 2.0,

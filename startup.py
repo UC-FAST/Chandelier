@@ -30,32 +30,29 @@ tuning = './pisp/imx477.json'
 config = ConfigLoader('./config.json')
 
 
-def getC(q:ListProxy):
-        microphone_stream = MicrophoneStream(
-            rate=16000,
-            chunk=1600,
-            channels=6,
-            ignored_channels=[0, 5],
-            device=0
-        )
-        for i in main(3, microphone_stream):
-            if i[0]>0.03:
-                q[:]=[
-                     i[0], 
-                     aziel_to_screen_spherical(
-                          *tuple(round(x) for x in i[1].squeeze().tolist())
-                     ),
-                ]
-                
-    
+def getC(q: ListProxy):
+    microphone_stream = MicrophoneStream(
+        rate=16000,
+        chunk=1600,
+        channels=6,
+        ignored_channels=[0, 5],
+        device=0
+    )
+    for i in main(3, microphone_stream):
+        if i[0] > 0.03:
+            azi, ele = tuple(round(x) for x in i[1].squeeze().tolist())
+            q[:] = [i[0], aziel_to_screen_spherical(azi, ele)]
+            print(f'azi={azi},ele={ele} =>',q[1])
+        else:
+            print(i[0])
 
 
 if __name__ == "__main__":
     print(sys.argv)
-    q = multiprocessing.Manager().list([None,None])
+    q = multiprocessing.Manager().list([None, None])
     p1 = multiprocessing.Process(target=getC, args=(q,))
     p1.start()
-    
+
     u = universalControl.UniversalControl(
         lcd20.Lcd(),
         [

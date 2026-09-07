@@ -21,7 +21,6 @@ class MarkerBox:
         )
 
     def decorate(self, frame, coordinate: tuple[int, int], text: str):
-        print(coordinate)
         """
         以中心点绘制方框，自动判断文字放框上方/下方
         :param frame: opencv图像 ndarray
@@ -31,7 +30,7 @@ class MarkerBox:
         :return: 绘制完成的图像（原图就地修改，同时返回）
         """
         if coordinate == None:
-            coordinate=(1,1)
+            return frame
         else:
             coordinate=int(coordinate[0]),int(coordinate[1])
         h_half, w_half = self.__size[0]//2, self.__size[1] // 2
