@@ -88,6 +88,10 @@ To easily show what's going on, we use [plotly](https://github.com/plotly/plotly
 
 1. S. Rickard, "[The DUET blind source separation algorithm.](https://www.researchgate.net/publication/227143748_The_DUET_blind_source_separation_algorithm)" Blind Speech Separation, pp. 217-241, 2007.
 
-2. Dey, Ajoy Kumar, and Susmita Saha. "[Acoustic Beamforming: Design and Development of Steered Response Power With Phase Transformation (SRP-PHAT).](https://www.diva-portal.org/smash/record.jsf?pid=diva2%3A830527&dswid=-9722)" (2011).
+2. Z. Rafii and B. Pardo, ["Degenerate unmixing estimation technique using the constant Q transform."](https://interactiveaudiolab.github.io/assets/papers/Rafii-Pardo%20-%20Degenerate%20Unmixing%20Estimation%20Technique%20using%20the%20Constant%20Q%20Transform%20-%20ICASSP%202011.pdf) in *2011 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)*, Prague, Czech Republic, 2011, pp. 217–220, doi: 10.1109/ICASSP.2011.5946379.
+
+3. Dey, Ajoy Kumar, and Susmita Saha. "[Acoustic Beamforming: Design and Development of Steered Response Power With Phase Transformation (SRP-PHAT).](https://www.diva-portal.org/smash/record.jsf?pid=diva2%3A830527&dswid=-9722)" (2011).
+
+4. E. Grinstein, E. Tengan, B. Çakmak, T. Dietzen, L. Nunes, T. van Waterschoot, M. Brookes, and P. A. Naylor, ["Steered response power for sound source localization: a tutorial review."](https://pmc.ncbi.nlm.nih.gov/articles/PMC11557718/) *EURASIP J. Audio Speech Music Process*, vol. 2024, no. 1, p. 59, Nov. 2024, doi: 10.1186/s13636‑024‑00377‑z.
 
 3. Ravanelli, Mirco, et al. "[SpeechBrain: A General-Purpose Speech Toolkit.](https://speechbrain.github.io/)" arXiv preprint arXiv:2106.04624 (2021).
