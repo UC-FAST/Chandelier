@@ -1,14 +1,14 @@
 # 3D Multiple Sound Sources Localization (SSL)
 
-### UPDATE: 2025-01-22: Refactor the code to make it more readable, remove redundant functions. Replace the outdated VAD with [Silero-vad](https://github.com/snakers4/silero-vad/tree/master) and fix the typo in the data.
+### UPDATE: 2026-01-22: Refactor the code to make it more readable, remove redundant functions. Replace the outdated VAD with [Silero-vad](https://github.com/snakers4/silero-vad/tree/master) and fix the typo in the data.
 
 The Steered Response Power Phase Transform (SRP-PHAT) is an important and robust algorithm to localize acoustic sound sources. However, the algorithm can only give us one location estimation. For multi-sources extension, we propose to use the Degraded Unmixing Estimation Technique (DUET) to separate each source and pass it to the SRP-PHAT algorithm to achieve multi-sources tracking.
 
 ## Prepare an Environment
 
 ```bash
->> git clone https://github.com/BrownsugarZeer/Multi_SSL.git
->> cd Multi_SSL
+>> git clone https://github.com/UC-FAST/et2026.git
+>> cd et2026
 >> python -m venv venv
 >> venv\Scripts\activate.bat
 >> pip install -r requirements.txt
@@ -16,10 +16,6 @@ The Steered Response Power Phase Transform (SRP-PHAT) is an important and robust
 
 > [Pyaudio](http://people.csail.mit.edu/hubert/pyaudio/) requires some tricks to install on Windows. If the installation fails, finding [unofficial wheels](https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyaudio) may be a available solution.
 
-## Hardware
-
-The [board](https://github.com/respeaker/usb_4_mic_array) is a far-field microphone array device capable of detecting voices up to 5m away even with the presence of background noise.\
-<img src="./img/respeaker.png" width="500">
 
 ## Running an Experiment
 
