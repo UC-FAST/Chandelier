@@ -4,7 +4,7 @@ After=network.target
 
 
 [Service]
-WorkingDirectory=/home/pi/ceee-cam-software/
+WorkingDirectory=/home/pi/chandelier/
 Type=forking
 User=pi
 ExecStart=python3 startup.py

@@ -14,7 +14,7 @@ import gpiozero
 
 import controlledEnd
 import frameDecorator
-from components import lcd20,led
+from components import lcd20, led
 from utils import configLoader, exception_recorder, Logger, LogMsg
 
 
@@ -495,15 +495,15 @@ class UniversalControl:
                         break
                     while not self.__enable:
                         time.sleep(0.1)
+
                     if queue[0] != None:
                         text, coordinate = queue[0], queue[1]
                         self.__markerBox.decorate(
                             self.__frame,
                             coordinate=coordinate,
-                            text=str(
-                                int(text*100)
-                            )
+                            text=str(int(text*100))
                         )
+
                     if self.__preview:
                         cv2.imshow(
                             'Monitor',
