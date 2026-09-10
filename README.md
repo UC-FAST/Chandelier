@@ -1,14 +1,14 @@
 # 3D Multiple Sound Sources Localization (SSL)
 
-### UPDATE: 2026-01-22: Refactor the code to make it more readable, remove redundant functions. Replace the outdated VAD with [Silero-vad](https://github.com/snakers4/silero-vad/tree/master) and fix the typo in the data.
+### UPDATE: 2026-09-09: Refactor the code to make it more readable, remove redundant functions. Replace the outdated VAD with [Silero-vad](https://github.com/snakers4/silero-vad/tree/master) and fix the typo in the data.
 
 The Steered Response Power Phase Transform (SRP-PHAT) is an important and robust algorithm to localize acoustic sound sources. However, the algorithm can only give us one location estimation. For multi-sources extension, we propose to use the Degraded Unmixing Estimation Technique (DUET) to separate each source and pass it to the SRP-PHAT algorithm to achieve multi-sources tracking.
 
 ## Prepare an Environment
 
 ```bash
->> git clone https://github.com/UC-FAST/et2026.git
->> cd et2026
+>> git clone https://github.com/UC-FAST/Chandelier.git
+>> cd chandelier
 >> python -m venv venv
 >> venv\Scripts\activate.bat
 >> pip install -r requirements.txt

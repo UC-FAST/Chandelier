@@ -5,12 +5,13 @@ from multi_ssl.utils.bss import Duet
 
 if __name__ == "__main__":
 
-    fs, x = read("mixtures_trash_kaf_16000.wav")
+    fs, x = read("/home/pi/et2026/data/a180e20_a225e35_a270e50/250cm/a180e19_a224e34_a269e49_3_1c186780.wav")
+
     x = np.transpose(x)[1:5, :]
     ic(x.shape)
     duet = Duet(
         x,
-        n_sources=2,
+        n_sources=3,
         sample_rate=fs,
         delay_max=2.0,
     )
