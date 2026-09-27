@@ -12,7 +12,7 @@ import sys
 import multiprocessing
 
 from multi_ssl.mic import MicrophoneStream
-from srp_phat_online import main
+from tests.srp_phat_online import main
 from utils.AngleToPixelMapper import aziel_to_screen_spherical
 
 
@@ -26,8 +26,8 @@ ConfigLoader(os.path.abspath('./config.json'))
 timestamp = SystemTimeManager().get_timestamp()
 SystemTimeManager().set_system_time_with_timestamp(timestamp)
 
-tuning = './pisp/imx477.json'
-config = ConfigLoader('./config.json')
+tuning = './config/pisp/imx477.json'
+config = ConfigLoader('./config/config.json')
 
 
 def getC(q: ListProxy):
@@ -62,7 +62,7 @@ if __name__ == "__main__":
             ),
             SystemMonitor(),
             MenuControlledEnd(
-                path='a.json',
+                path='./config/a.json',
                 show_preview=True,
                 row_count=5,
                 show_index=True,
