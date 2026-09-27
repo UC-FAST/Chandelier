@@ -15,7 +15,7 @@ from collections import deque
 
 from multi_ssl.mic.microphone_stream import MicrophoneStream
 
-torch.set_num_threads(1)
+torch.set_num_threads(4)
 
 
 def get_microphone_chunks(

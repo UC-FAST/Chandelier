@@ -39,11 +39,11 @@ azi:   54.0, ele:   30.5
 
 ```bash
 # Automatically determine the number of sources
-(venv) > python srp_phat_offline.py -s=1 -c=4 -i=None --wave=data/a180e20/50cm/a180e19_3_1b6ede00.wav
+(venv) > python srp_phat_offline.py -s=1 -c=4 -i=None --wave=res/data/a180e20/50cm/a180e19_3_1b6ede00.wav
 Find 1 available sources.
 azi:  179.7, ele:   22.7
 
-(venv) > python srp_phat_offline.py -s=3 -c=4 -i=None --wave=data/a180e20_a225e35_a270e50/250cm/a180e19_a224e34_a269e49_3_1c186780.wav
+(venv) > python srp_phat_offline.py -s=3 -c=4 -i=None --wave=res/data/a180e20_a225e35_a270e50/250cm/a180e19_a224e34_a269e49_3_1c186780.wav
 Find 3 available sources.
 azi:  223.2, ele:   44.9
 azi:  266.2, ele:   51.2
@@ -58,27 +58,27 @@ You can test the DUET algorithm by running the script in `tests` folder. Here is
 
 https://github.com/user-attachments/assets/8b9b9b52-4342-4659-a95a-5deec2ccaec0
 
-<img src="./img/duet.png" width="300">
+<img src="./res/img/duet.png" width="300">
 
 ## Visualization
 
 To easily show what's going on, we use [plotly](https://github.com/plotly/plotly.py) to plot the DOA on a sphere which diameter is 1 meter. The center of the sphere is the microphone array we place at p(x=0, y=0, z=0), the dark blue dots are the Directions of Arrival (DOA), and the lighter dots are the projections on each plane.
 
 ```bash
-(venv) > python srp_visualizer.py -s=1 --wav=data/a180e20/50cm.csv
+(venv) > python srp_visualizer.py -s=1 --wav=res/data/a180e20/50cm.csv
 ```
 
 50cm
 
-<img src="./img/50cm.png" width="700">
+<img src="./res/img/50cm.png" width="700">
 
 150cm
 
-<img src="./img/150cm.png" width="700">
+<img src="./res/img/150cm.png" width="700">
 
 250cm
 
-<img src="./img/250cm.png" width="700">
+<img src="./res/img/250cm.png" width="700">
 
 ## Issue
 

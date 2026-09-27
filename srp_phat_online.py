@@ -8,9 +8,9 @@ from multi_ssl.mic import get_microphone_chunks, init_respeaker_mic_array
 def main(src,microphone_stream):
     for sample_rate, waveform in get_microphone_chunks(
         microphone_stream,
-        min_to_cumulate=2,
-        max_to_cumulate=2,
-        speech_threshold=0.6,
+        #min_to_cumulate=2,
+        max_to_cumulate=5,
+        speech_threshold=0.0,
     ):
         
         duet = Duet(
