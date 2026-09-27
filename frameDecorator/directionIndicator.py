@@ -15,7 +15,7 @@ class DirectionIndicator:
                 (self.__width // 12, self.__height // 4),
                 (self.__width // 6, self.__height // 12),
                 (self.__width // 4, self.__height // 4),
-                (self.__width // 5, self.__height // 4), m
+                (self.__width // 5, self.__height // 4), 
                 (self.__width // 5, self.__height - self.__height // 12),
                 (self.__width // 8, self.__height - self.__height // 12),
                 (self.__width // 8, self.__height // 4)

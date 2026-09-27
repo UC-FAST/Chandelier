@@ -78,7 +78,7 @@ class UniversalControl:
         self.__frame = None  # Frame gen by current controlled end
         self.__signal = False
 
-        self.__markerBox = frameDecorator.MarkerBox(size=(20, 20))
+        self.__markerBox = frameDecorator.MarkerBox(size=(20, 20),cache=3)
 
         for i in self.__controlledend_list:
             i.irq(self.__irq)

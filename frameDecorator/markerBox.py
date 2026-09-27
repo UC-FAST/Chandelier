@@ -1,4 +1,5 @@
 import cv2
+from collections import deque
 
 
 class MarkerBox:
@@ -8,19 +9,26 @@ class MarkerBox:
         height: int = 240,
         color: tuple[int, int, int] = (0, 0, 255),
         size: tuple[int, int] = (10, 10),
-        font_height: int = 12
+        font_height: int = 12,
+        cache: int | None = None
     ):
         self.__width = width
         self.__height = height
         self.__color = color
-        self.__size = size
+        self.__boxSize = size
         self.__font_height = font_height
         self.__font_scale = cv2.getFontScaleFromHeight(
             cv2.FONT_ITALIC,
             self.__font_height
         )
+        self.__cache= cache
+        if self.__cache:
+            self.__cache_queue=deque(maxlen=self.__cache)
 
-    def decorate(self, frame, coordinate: tuple[int, int], text: str):
+
+
+        
+    def __decorate_without_cache(self, frame, coordinate: tuple[int, int], text: str):
         """
         以中心点绘制方框，自动判断文字放框上方/下方
         :param frame: opencv图像 ndarray
@@ -29,12 +37,9 @@ class MarkerBox:
         :param rotate: 预留旋转参数（暂未实现，按需扩展）
         :return: 绘制完成的图像（原图就地修改，同时返回）
         """
-        if coordinate == None:
-            return frame
-        else:
-            coordinate=int(coordinate[0]),int(coordinate[1])
-        h_half, w_half = self.__size[0]//2, self.__size[1] // 2
 
+        
+        h_half, w_half = self.__boxSize[0]//2, self.__boxSize[1] // 2
         # 计算矩形对角坐标
         x1, y1 = coordinate[0] - w_half, coordinate[1] - h_half
         x2, y2 = coordinate[0] + w_half, coordinate[1] + h_half
@@ -95,4 +100,85 @@ class MarkerBox:
             thickness
         )
 
-        return frame
+    def __decorate_with_cache(self, frame, coordinate: tuple[int, int], text: str):
+        if not coordinate in self.__cache_queue:
+            self.__cache_queue.append(coordinate)
+        max_x, min_x = coordinate[0], coordinate[0]
+        max_y, min_y = coordinate[1], coordinate[1]
+        if self.__cache_queue:
+            for i in self.__cache_queue:
+                max_x=max(max_x,i[0])
+                min_x=min(min_x,i[0])
+                max_y=max(max_y,i[1])
+                min_y=min(min_y,i[1])
+        print(self.__cache_queue)
+        center_x = (max_x + min_x) // 2
+        center_y = (max_y + min_y) // 2
+        size=(max_x - min_x+self.__boxSize[0], max_y - min_y+self.__boxSize[1])
+
+        cv2.rectangle(
+            frame, 
+            (center_x - size[0]//2, center_y - size[1]//2), 
+            (center_x + size[0]//2, center_y + size[1]//2), 
+            self.__color, 
+            thickness=1
+            )
+
+    def decorate(self, frame, coordinate: tuple[int, int], text: str):
+        if coordinate == None:
+            return frame
+        else:
+            coordinate = int(coordinate[0]), int(coordinate[1])
+
+        if self.__cache is None:
+            self.__decorate_without_cache(frame, coordinate, text)
+        else:
+            self.__decorate_with_cache(frame, coordinate, text)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+'''class queueNoDelete:
+    def __init__(self, maxsize: int = 0):
+        self.__maxsize = maxsize
+        self.__queue = list()
+
+    def put(self, item, block: bool = True, timeout: float | None = None) -> None:
+        if self.full:
+
+    def put_nowait(self, item) -> None:
+        self.put(item, block=False)
+
+    def get(self, block: bool = True, timeout: float | None = None):
+        pass
+
+    def get_nowait(self):
+        return self.get(block=False)
+
+    @property
+    def qsize(self) -> int:
+        return len(self.__queue)
+
+    @property
+    def empty(self) -> bool:
+        return self.qsize == 0
+
+    @property
+    def full(self) -> bool:
+        return self.qsize == self.__maxsize
+'''
