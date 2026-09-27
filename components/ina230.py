@@ -31,11 +31,11 @@ class INA230:
 
     def __init__(
             self,
-            bus_number=ConfigLoader()['sensor']['INA230']['bus'],
+            bus_number=ConfigLoader('./config/config.json')['sensor']['INA230']['bus'],
             address=0x40,
-            shunt_resistance=ConfigLoader()[
+            shunt_resistance=ConfigLoader('./config/config.json')[
                 'sensor']['INA230']['shunt resistance'],
-            max_expected_current=ConfigLoader()[
+            max_expected_current=ConfigLoader('./config/config.json')[
                 'sensor']['INA230']['maximum expected current']
     ):
         """

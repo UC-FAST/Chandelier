@@ -21,7 +21,7 @@ class Cam:
     def __init__(self, verbose_console: int = logging.INFO, tuning=None):
         self.__cam = picamera2.Picamera2(tuning=tuning)
         self.__cam.set_logging(verbose_console)
-        self.__config = ConfigLoader('./config.json')
+        self.__config = ConfigLoader('./config/config.json')
         self.__pict_config = self.__cam.create_preview_configuration(
             main={
                 "size": (self.__config['screen']['width'] * 2, self.__config['screen']['height'] * 2)

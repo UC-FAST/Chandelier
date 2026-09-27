@@ -52,7 +52,7 @@ class BQ32002:
 
     def __init__(
         self,
-            bus_number=ConfigLoader()['sensor']['BQ32002']['bus'],
+            bus_number=ConfigLoader('./config/config.json')['sensor']['BQ32002']['bus'],
             addr=0x68
     ):
         """

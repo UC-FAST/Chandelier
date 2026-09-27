@@ -44,7 +44,7 @@ class CameraControlledEnd(controlledEnd.ControlledEnd, picam2.Cam):
             tuning=tuning
         )
 
-        self.__config = configLoader.ConfigLoader('./config.json')
+        self.__config = configLoader.ConfigLoader('./config/config.json')
         self.__bar_chart = frameDecorator.BarChart(
             self.__config['screen']['width'],
             self.__config['screen']['height'],

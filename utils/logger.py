@@ -64,7 +64,7 @@ class ColorEnum(StrEnum):
 class Logger:
     def __init__(self) -> None:
         self.__severity = min(
-            math.floor(ConfigLoader('./config.json')['debug_level']), 50
+            math.floor(ConfigLoader('./config/config.json')['debug_level']), 50
         )
         self.__boot_time = psutil.boot_time()
 

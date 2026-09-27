@@ -21,7 +21,7 @@ sys.path.append('./components/')
 sys.path.append('./utils/')
 
 
-ConfigLoader(os.path.abspath('./config.json'))
+ConfigLoader(os.path.abspath('./config/config.json'))
 
 timestamp = SystemTimeManager().get_timestamp()
 SystemTimeManager().set_system_time_with_timestamp(timestamp)

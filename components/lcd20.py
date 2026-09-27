@@ -15,7 +15,7 @@ from utils import ConfigLoader, singleton, LogMsg, Logger
 class Lcd:
     def __init__(self, width=320, height=240, spi_freq=80000000):
         self.width, self.height = width, height
-        self.__config = ConfigLoader('./config.json')
+        self.__config = ConfigLoader('./config/config.json')
         self.RST_PIN = gpiozero.DigitalOutputDevice(
             self.__config['pin']['rst'],
             active_high=True,

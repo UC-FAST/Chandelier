@@ -68,7 +68,7 @@ class UniversalControl:
             argv: list
     ):
         self.__controlledend_list = controlledend_list
-        self.__config = configLoader.ConfigLoader('./config.json')
+        self.__config = configLoader.ConfigLoader('./config/config.json')
         self.__logger = Logger()
         self.__enable = True
         self.__rights = 0  # Current controlled end in use

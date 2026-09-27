@@ -182,7 +182,7 @@ class MenuControlledEnd(ControlledEnd):
         }
 
         self.__frame_list = None
-        self.__config = configLoader.ConfigLoader('./config.json')
+        self.__config = configLoader.ConfigLoader('./config/config.json')
 
         self.__logger = Logger()
 

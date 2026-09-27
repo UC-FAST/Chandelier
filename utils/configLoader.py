@@ -15,6 +15,6 @@ class ConfigLoader:
         return self.__config[item]
     
 if __name__=='__main__':
-    a=ConfigLoader()
-    b=ConfigLoader()
+    a=ConfigLoader('./config/config.json')
+    b=ConfigLoader('./config/config.json')
     print(id(a),id(b))

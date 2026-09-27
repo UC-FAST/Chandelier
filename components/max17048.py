@@ -15,7 +15,7 @@ from utils import ConfigLoader, Logger, LogMsg, singleton
 class MAX17048:
     def __init__(
         self,
-        bus_number=ConfigLoader()['sensor']['MAX17048']['bus'],
+        bus_number=ConfigLoader('./config/config.json')['sensor']['MAX17048']['bus'],
         addr=0x36
     ):
         self.__i2c = smbus2.SMBus(bus_number)
