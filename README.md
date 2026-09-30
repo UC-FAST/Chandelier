@@ -74,7 +74,7 @@ To easily show what's going on, we use [plotly](https://github.com/plotly/plotly
 
 150cm
 
-<img src="./res/img/150cm.png" width="700">
+![](./res/img/250cm.png)
 
 250cm
 
