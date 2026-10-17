@@ -1,7 +1,7 @@
 # logging_config.py
 import logging
 from logging.config import dictConfig
-​
+
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,  # 避免禁用第三方库日志
@@ -37,6 +37,6 @@ LOGGING_CONFIG = {
         }
     }
 }
-​
+
 dictConfig(LOGGING_CONFIG)
 logger = logging.getLogger("myapp") # 创建全局 logger 实例

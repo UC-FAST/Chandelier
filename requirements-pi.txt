@@ -1,0 +1,11 @@
+# Raspberry Pi hardware dependencies.
+-r requirements.txt
+
+gpiozero>=2.0
+spidev>=3.5
+smbus2>=0.4
+picamera2>=0.3.12
+simplejpeg>=1.6
+pidng>=4.0
+piexif>=1.1
+python-prctl>=1.7

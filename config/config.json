@@ -5,9 +5,9 @@
         "left": 22,
         "down": 1,
         "center": 5,
-        "rotaryEncoder1A": 17,
-        "rotaryEncoder1B": 24,
-        "rotaryEncoder1S": 27,
+        "rotary_encoder_1a": 17,
+        "rotary_encoder_1b": 24,
+        "rotary_encoder_1s": 27,
         "shutter": 16,
         "cross": 23,
         "square": 25,
@@ -17,31 +17,62 @@
         "bl": 21
     },
     "camera": {
-        "path": "./pict",
-        "video_path": "./pict/video",
-        "video_bitrate": 1000000
+        "path": "pict",
+        "video_path": "pict/video",
+        "video_bitrate": 1000000,
+        "tuning_file": null,
+        "preview_width": 640,
+        "preview_height": 480
     },
     "screen": {
         "width": 320,
         "height": 240
     },
     "led": {
-        "led_green": 12,
-        "led_blue": 13
+        "green": 12,
+        "blue": 13
     },
     "sensor": {
-        "BQ32002": {
+        "bq32002": {
             "bus": 1
         },
-        "INA230": {
+        "ina230": {
             "bus": 1,
-            "shunt resistance": 0.002,
-            "maximum expected current": 3.2
+            "shunt_resistance": 0.002,
+            "maximum_expected_current": 3.2
         },
-        "MAX17048": {
+        "max17048": {
             "bus": 1
         }
     },
+    "localizer": {
+        "device": 0,
+        "rate": 16000,
+        "chunk": 1600,
+        "channels": 6,
+        "ignored_channels": [
+            0,
+            5
+        ],
+        "n_sources": 3,
+        "confidence_threshold": 0.03,
+        "max_to_cumulate": 5,
+        "speech_threshold": 0.0,
+        "silero_model_dir": null,
+        "delay_max": 0.0,
+        "n_delay_bins": 50,
+        "mic_rotation": 0.0
+    },
+    "marker": {
+        "mode": "single",
+        "max_sources": 3,
+        "ttl": 3.0,
+        "smoothing": 5,
+        "trail": 3,
+        "size": 24
+    },
     "debug_level": 10,
-    "internet test": "http://www.msftconnecttest.com/connecttest.txt"
+    "internet_test_url": "http://www.msftconnecttest.com/connecttest.txt",
+    "ntp_server": "ntp1.aliyun.com",
+    "menus_file": "config/menus.json"
 }

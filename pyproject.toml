@@ -1,0 +1,52 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chandelier"
+version = "0.2.0"
+description = "Raspberry Pi camera terminal with multi-source sound localisation"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "Pillow>=9.0",
+    "scipy>=1.10",
+    "requests>=2.28",
+    "psutil>=5.9",
+]
+
+[project.optional-dependencies]
+localizer = [
+    "torch>=2.0",
+    "speechbrain>=0.5.9",
+    "PyAudio>=0.2.14",
+    "soundfile>=0.13",
+    "plotly>=5.4",
+]
+pi = [
+    "gpiozero>=2.0",
+    "spidev>=3.5",
+    "picamera2>=0.3.12",
+    "smbus2>=0.4",
+    "simplejpeg>=1.6",
+    "pidng>=4.0",
+    "piexif>=1.1",
+    "python-prctl>=1.7",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+chandelier = "chandelier.app:main"
+
+[tool.setuptools.packages.find]
+include = ["chandelier*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+norecursedirs = ["legacy", "res", ".git"]
