@@ -13,9 +13,9 @@ from dataclasses import dataclass
 import cv2
 import numpy as np
 
+from chandelier.ui.text_render import get_renderer
 from chandelier.ui.themes import get_theme
 
-_FONT = cv2.FONT_HERSHEY_SIMPLEX
 _ROLE_ATTRS = {
     "text": "text",
     "dim": "text_dim",
@@ -49,7 +49,7 @@ class StatusBar:
         self._width = width
         self._height = height
         self._font_height = font_height
-        self._font_scale = cv2.getFontScaleFromHeight(_FONT, font_height)
+        self._renderer = get_renderer()
         self._position = "bottom" if position == "bottom" else "top"
         self._alpha = max(0.0, min(1.0, float(alpha)))
         self._items: list[_Item] = []
@@ -77,9 +77,7 @@ class StatusBar:
     # Layout helpers
     # ------------------------------------------------------------------
     def _text_width(self, text: str) -> int:
-        return cv2.getTextSize(
-            text, _FONT, self._font_scale, 1
-        )[0][0]
+        return self._renderer.measure(text, self._font_height)[0]
 
     def _fit(self, text: str, max_width: int | None = None) -> str:
         if max_width is None:
@@ -119,6 +117,12 @@ class StatusBar:
         return list(zip(items, widths))
 
     def _role_color(self, theme, role: str):
+        if role == "text" and theme.header_text is not None:
+            return theme.header_text
+        if role == "dim" and theme.header_text_dim is not None:
+            return theme.header_text_dim
+        if role == "accent" and theme.header_text is not None:
+            return theme.header_text_dim or theme.header_text
         return getattr(theme, _ROLE_ATTRS.get(role, "text"), theme.text)
 
     # ------------------------------------------------------------------
@@ -179,15 +183,13 @@ class StatusBar:
         baseline = y0 + (bar_height + self._font_height) // 2 - 1
 
         for index, (item, item_width) in enumerate(layout):
-            cv2.putText(
+            self._renderer.draw(
                 frame,
                 item.text,
                 (x, baseline),
-                _FONT,
-                self._font_scale,
+                self._font_height,
                 self._role_color(theme, item.role),
                 1,
-                cv2.LINE_AA,
             )
             if index < len(layout) - 1:
                 separator_x = x + item_width + gap // 2

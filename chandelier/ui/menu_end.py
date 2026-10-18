@@ -16,7 +16,11 @@ from chandelier.menu_defaults import ensure_menu_defaults
 from chandelier.ui.controlled_end import ControlledEnd
 from chandelier.ui.decorators.icons import draw_icon
 from chandelier.ui.text_render import get_renderer
-from chandelier.ui.themes import get_theme, theme_id_from_options
+from chandelier.ui.themes import (
+    get_theme,
+    set_active_theme,
+    theme_id_from_options,
+)
 
 
 class MenuControlledEnd(ControlledEnd):
@@ -89,6 +93,8 @@ class MenuControlledEnd(ControlledEnd):
         main_loop(): Generator yielding rendered frames for display.
         """
 
+    OPTION_VISIBLE_COUNT = 5
+
     def __init__(
             self,
             _id: str = EndId.MENU.value,
@@ -155,8 +161,11 @@ class MenuControlledEnd(ControlledEnd):
         )
         self._renderer = get_renderer()
         self._text_queue: list[tuple] = []
-        self._confirm_reboot = False
+        self._confirm_power = False
         self._confirm_option: dict | None = None
+        self._retro_style: str | None = None
+        self._theme_preview_active = False
+        self._theme_preview_original: str | None = None
         self._padding = padding
         self._show_index, self._show_preview, self._thickness = show_index, show_preview, thickness
         self._header_height = max(20, self._font_height + 6)
@@ -199,8 +208,36 @@ class MenuControlledEnd(ControlledEnd):
 
     def _apply_theme(self, theme_id: str) -> None:
         self._menu_theme = get_theme(theme_id)
+        set_active_theme(self._menu_theme.id)
         # Kept for older drawing helpers that still index a dict.
         self._theme = self._menu_theme.legacy_dict()
+
+    def _preview_theme(self) -> None:
+        """Apply the theme currently highlighted in the editor."""
+
+        if not self._theme_preview_active or self._select_index is None:
+            return
+        option = self._current_options[self._select_index]
+        if option.get("id") != "theme":
+            return
+        value = self._value_temp
+        if isinstance(value, dict):
+            value = value.get("value")
+        if value is not None:
+            self._apply_theme(str(value))
+
+    def _cancel_theme_preview(self) -> None:
+        if (
+            self._theme_preview_active
+            and self._theme_preview_original is not None
+        ):
+            self._apply_theme(self._theme_preview_original)
+        self._theme_preview_active = False
+        self._theme_preview_original = None
+
+    def _finish_theme_preview(self) -> None:
+        self._theme_preview_active = False
+        self._theme_preview_original = None
 
     def _page_count_calc(self):
         """
@@ -250,6 +287,7 @@ class MenuControlledEnd(ControlledEnd):
         self._title = self._title = self._option_list[self._current_menu_id].get(
             'title', None)
         self._options = self._option_list[self._current_menu_id]['options']
+        self._apply_enable_conditions()
         self._page_count_calc()
         self._space_calc()
         self._select_index = None
@@ -419,6 +457,28 @@ class MenuControlledEnd(ControlledEnd):
         self._jump_by_id(last[0], record=False)
         self._current_index = last[1]
 
+    def _apply_enable_conditions(self) -> None:
+        """Apply declarative ``enable_if`` dependencies for option values."""
+
+        if not self._options:
+            return
+        values = {}
+        for option in self._options:
+            if not isinstance(option, dict):
+                continue
+            value = option.get("value")
+            if isinstance(value, dict):
+                value = value.get("value")
+            values[option.get("id")] = value
+
+        for option in self._options:
+            condition = option.get("enable_if")
+            if not isinstance(condition, dict):
+                continue
+            option["enable"] = (
+                values.get(condition.get("id")) == condition.get("value")
+            )
+
     def _set_enable_state(self, option):
         """
         Updates the 'enable' state of options based on the provided configuration.
@@ -478,6 +538,7 @@ class MenuControlledEnd(ControlledEnd):
                 'value']
             self._set_enable_state(
                 self._current_options[self._current_index])
+            self._apply_enable_conditions()
             self._msg_sender(
                 self._id,
                 self._from,
@@ -505,16 +566,20 @@ class MenuControlledEnd(ControlledEnd):
             return
         elif t == MenuItemType.MSG:
             option = self._current_options[self._current_index]
-            if option.get("id") == "reboot" and not self._confirm_reboot:
+            if option.get("id") == "reboot" and not self._confirm_power:
                 # Destructive action: require a second confirmation press.
-                self._confirm_reboot = True
+                self._confirm_power = True
                 self._confirm_option = option
                 return
-            self._confirm_reboot = False
+            self._confirm_power = False
             self._confirm_option = None
             self._send_current_message()
         elif t == MenuItemType.OPTION or t == MenuItemType.NUMERAL:
-            self._value_temp = self._current_options[self._current_index]['value']
+            option = self._current_options[self._current_index]
+            if option.get("id") == "theme":
+                self._theme_preview_active = True
+                self._theme_preview_original = self._menu_theme.id
+            self._value_temp = option['value']
             self._select_index = self._current_index
         else:
             raise RuntimeError()
@@ -527,6 +592,14 @@ class MenuControlledEnd(ControlledEnd):
             (option["value"], self._menu_options[self._from]),
         )
         self._irq(self._from)
+
+    def _send_power_action(self, option: dict) -> None:
+        self._msg_sender(
+            None,
+            option.get("receiver", EndId.CONTROLLER.value),
+            option,
+        )
+        self._irq(self._from or EndId.CAMERA.value)
 
     def unselect(self):
         """
@@ -542,6 +615,8 @@ class MenuControlledEnd(ControlledEnd):
         """
         self._current_options[self._select_index]['value'] = self._value_temp
         self._value_temp = None
+        self._apply_enable_conditions()
+        self._page_count_calc()
         self._msg_sender(
             self._id,
             self._from,
@@ -550,20 +625,22 @@ class MenuControlledEnd(ControlledEnd):
                 self._menu_options[self._from]
             )
         )
-        # If have reveiver in option, send value to it
-        receiver = self._current_options[self._select_index].get(
-            'receiver', None)
-        if receiver and 'value' in self._current_options[self._select_index].keys():
-            self._msg_sender(
-                None,
-                receiver,
-                self._current_options[self._select_index]
-            )
         edited = self._current_options[self._select_index]
+        receiver = edited.get("receiver")
+
+        if edited.get("id") == "power":
+            # Destructive action: ask for confirmation before sending the
+            # selected action to the controller.
+            self._confirm_power = True
+            self._confirm_option = edited
+        elif receiver and "value" in edited:
+            self._msg_sender(None, receiver, edited)
+
         self._select_index = None
         self.dump_config()
         if edited.get("id") == "theme":
             self._apply_theme(self._read_theme_id())
+            self._finish_theme_preview()
         elif edited.get("id") == "language":
             value = edited.get("value")
             if isinstance(value, dict):
@@ -643,6 +720,7 @@ class MenuControlledEnd(ControlledEnd):
         self._title = self._option_list[self._current_menu_id].get(
             'title', None)
         self._options = self._option_list[self._current_menu_id]['options']
+        self._apply_enable_conditions()
 
         self._page_count_calc()
         self._space_calc()
@@ -1253,11 +1331,13 @@ class MenuControlledEnd(ControlledEnd):
                 frame, text, org, height, color, thickness
             )
 
-    def _fit_text(self, text: str, max_width: int) -> str:
+    def _fit_text(
+        self, text: str, max_width: int, scale: float | None = None
+    ) -> str:
         text = tr(text)
         if max_width <= 0 or not text:
             return ""
-        scale = self._font_scale
+        scale = self._font_scale if scale is None else scale
         if self._measure(text, self._menu_theme.font_face, scale, 1)[0][0] <= max_width:
             return text
         ellipsis = ".."
@@ -1301,6 +1381,11 @@ class MenuControlledEnd(ControlledEnd):
         if fmt == "degrees":
             try:
                 return f"{float(value):.0f}deg"
+            except (TypeError, ValueError):
+                return str(value)
+        if fmt == "lens":
+            try:
+                return f"{float(value) / 100.0:.2f} dpt"
             except (TypeError, ValueError):
                 return str(value)
         if isinstance(value, float):
@@ -1438,6 +1523,11 @@ class MenuControlledEnd(ControlledEnd):
         )
         badge_width = min(x2 - x1, max(34, text_width + 12))
         badge_height = min(18, max(14, y2 - y1 - 6))
+        text = self._fit_text(
+            text,
+            max(0, badge_width - 12),
+            self._small_font_scale,
+        )
         bx1 = x2 - badge_width
         by1 = (y1 + y2 - badge_height) // 2
         by2 = by1 + badge_height
@@ -1536,7 +1626,20 @@ class MenuControlledEnd(ControlledEnd):
             )
             label_x += 12
 
-        value_width = 74
+        value_text = self._display_value(option)
+        value_badge_width = max(
+            34,
+            self._measure(
+                value_text,
+                theme.font_face,
+                self._small_font_scale,
+                1,
+            )[0][0]
+            + 12,
+        )
+        value_width = min(
+            int((x2 - x1) * 0.45), value_badge_width
+        )
         value_left = x2 - value_width - 4
         label = self._fit_text(
             str(option.get("content", "")), max(0, value_left - label_x - 4)
@@ -1706,6 +1809,15 @@ class MenuControlledEnd(ControlledEnd):
             cv2.LINE_AA,
         )
 
+    @classmethod
+    def _option_window(cls, selected: int, count: int) -> tuple[int, int]:
+        visible = min(cls.OPTION_VISIBLE_COUNT, count)
+        start = min(
+            max(0, selected - cls.OPTION_VISIBLE_COUNT // 2),
+            max(0, count - visible),
+        )
+        return start, visible
+
     def _draw_option_edit(self, frame) -> None:
         theme = self._menu_theme
         option = self._current_options[self._current_index]
@@ -1716,45 +1828,34 @@ class MenuControlledEnd(ControlledEnd):
         except ValueError:
             selected = 0
 
+        if not choices:
+            return
+
+        # Second screen line: fixed arrows plus the option name.  Only the
+        # option window below it scrolls.
+        arrow_y = self._content_top + 14
+        label = self._fit_text(
+            str(option.get("content", "")),
+            self._width - 2 * self._padding[0] - 28,
+            self._small_font_scale,
+        )
+        (label_width, _), _ = self._measure(
+            label, theme.font_face, self._small_font_scale, 1
+        )
         self._text(
             frame,
-            option.get("content", ""),
-            (self._padding[0], self._content_top + 14),
+            label,
+            ((self._width - label_width) // 2, arrow_y),
             theme.font_face,
             self._small_font_scale,
             theme.text_dim,
             1,
             cv2.LINE_AA,
         )
-
-        center_y = self._content_top + 58
-        for offset, color, scale in (
-            (-1, theme.text_dim, self._small_font_scale),
-            (0, theme.accent, self._big_font_scale),
-            (1, theme.text_dim, self._small_font_scale),
-        ):
-            index = selected + offset
-            if not 0 <= index < len(choices):
-                continue
-            text = str(choices[index].get("content", ""))
-            (text_width, _), _ = self._measure(
-                text, theme.font_face, scale, 1
-            )
-            self._text(
-                frame,
-                text,
-                ((self._width - text_width) // 2, center_y + offset * 30),
-                theme.font_face,
-                scale,
-                color,
-                1,
-                cv2.LINE_AA,
-            )
-
         self._text(
             frame,
             "<",
-            (self._padding[0] + 6, center_y + 2),
+            (self._padding[0] + 6, arrow_y),
             theme.font_face,
             self._font_scale,
             theme.accent,
@@ -1764,7 +1865,7 @@ class MenuControlledEnd(ControlledEnd):
         self._text(
             frame,
             ">",
-            (self._width - self._padding[2] - 14, center_y + 2),
+            (self._width - self._padding[2] - 14, arrow_y),
             theme.font_face,
             self._font_scale,
             theme.accent,
@@ -1772,7 +1873,152 @@ class MenuControlledEnd(ControlledEnd):
             cv2.LINE_AA,
         )
 
-    def _draw_reboot_confirm(self, frame) -> None:
+        # Show a window of choices around the selection instead of only the
+        # current/previous/next values.
+        start, visible = self._option_window(selected, len(choices))
+        x1 = self._padding[0]
+        x2 = self._width - self._padding[2]
+        list_top = self._content_top + 34
+        available = max(1, self._content_bottom - list_top)
+        row_height = min(
+            28,
+            max(18, available // max(1, visible)),
+        )
+        block_height = row_height * visible
+        block_top = list_top + max(
+            0, (available - block_height) // 2
+        )
+        retro = self._retro_style
+        if retro in {"luna", "win7", "win10"}:
+            radius = 4 if retro == "win10" else 6
+            self._rounded_rect(
+                frame,
+                x1,
+                block_top - 4,
+                x2,
+                block_top + block_height + 4,
+                theme.surface,
+                radius,
+            )
+            if retro == "win10":
+                cv2.rectangle(
+                    frame,
+                    (x1, block_top - 4),
+                    (x2, block_top + block_height + 4),
+                    theme.border,
+                    1,
+                    cv2.LINE_AA,
+                )
+        elif retro == "win2000":
+            self._bevel_rect(
+                frame,
+                x1,
+                block_top - 4,
+                x2,
+                block_top + block_height + 4,
+                theme.surface_alt,
+                raised=False,
+            )
+
+        for row in range(visible):
+            index = start + row
+            choice = choices[index]
+            chosen = index == selected
+            scale = (
+                self._big_font_scale
+                if chosen
+                else self._small_font_scale
+            )
+            text = self._fit_text(
+                str(choice.get("content", "")),
+                self._width - 2 * self._padding[0] - 24,
+                scale,
+            )
+            height = self._pixel_height(scale)
+            row_top = block_top + row * row_height
+            if chosen and retro == "win7":
+                selection_bg = self._blend(
+                    theme.surface_alt, theme.accent, 0.25
+                )
+                self._rounded_rect(
+                    frame,
+                    x1 + 2,
+                    row_top + 1,
+                    x2 - 2,
+                    row_top + row_height - 2,
+                    selection_bg,
+                    3,
+                )
+            elif chosen and retro == "win10":
+                self._rounded_rect(
+                    frame,
+                    x1 + 2,
+                    row_top + 1,
+                    x2 - 2,
+                    row_top + row_height - 2,
+                    theme.accent,
+                    2,
+                )
+            elif chosen and retro:
+                if retro == "luna":
+                    self._rounded_rect(
+                        frame,
+                        x1 + 2,
+                        row_top + 1,
+                        x2 - 2,
+                        row_top + row_height - 2,
+                        theme.accent,
+                        4,
+                    )
+                else:
+                    cv2.rectangle(
+                        frame,
+                        (x1 + 2, row_top + 1),
+                        (x2 - 2, row_top + row_height - 2),
+                        theme.accent,
+                        -1,
+                    )
+            elif chosen:
+                self._rounded_rect(
+                    frame,
+                    x1,
+                    row_top + 1,
+                    x2,
+                    row_top + row_height - 2,
+                    theme.surface_alt,
+                    5,
+                )
+                cv2.rectangle(
+                    frame,
+                    (x1 + 2, row_top + 6),
+                    (x1 + 5, row_top + row_height - 7),
+                    theme.accent,
+                    -1,
+                )
+            (text_width, _), _ = self._measure(
+                text, theme.font_face, scale, 1
+            )
+            if chosen and retro:
+                text_color = theme.selection_text or theme.accent_text
+            elif chosen:
+                text_color = theme.accent
+            else:
+                text_color = theme.text_dim
+            self._text(
+                frame,
+                text,
+                (
+                    (self._width - text_width) // 2,
+                    row_top + (row_height + height) // 2 - 1,
+                ),
+                theme.font_face,
+                scale,
+                text_color,
+                1,
+                cv2.LINE_AA,
+            )
+
+    def _draw_power_confirm(self, frame) -> None:
         theme = self._menu_theme
         width = min(250, self._width - 20)
         height = 86
@@ -1780,20 +2026,64 @@ class MenuControlledEnd(ControlledEnd):
         y1 = (self._height - height) // 2
         x2 = x1 + width
         y2 = y1 + height
-        self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 8)
-        self._rounded_rect(frame, x1, y1, x2, y2, theme.danger, 8, 2)
+        retro = self._retro_style
+        if retro == "luna":
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 8)
+            cv2.rectangle(
+                frame, (x1 + 1, y1 + 1), (x2 - 1, y1 + 22),
+                theme.header_bg, -1,
+            )
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.accent, 8, 1)
+        elif retro == "win2000":
+            self._bevel_rect(
+                frame, x1, y1, x2, y2, theme.surface_alt, raised=True
+            )
+            cv2.rectangle(
+                frame, (x1 + 2, y1 + 2), (x2 - 2, y1 + 20),
+                theme.header_bg, -1,
+            )
+        elif retro == "win7":
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 8)
+            cv2.rectangle(
+                frame, (x1 + 1, y1 + 1), (x2 - 1, y1 + 22),
+                theme.header_bg, -1,
+            )
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.accent, 8, 1)
+        elif retro == "win10":
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 4)
+            cv2.rectangle(
+                frame, (x1 + 1, y1 + 1), (x2 - 1, y1 + 22),
+                theme.accent, -1,
+            )
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.border, 4, 1)
+        else:
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 8)
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.danger, 8, 2)
 
-        title = tr("Reboot system?")
+        action = ""
+        if isinstance(self._confirm_option, dict):
+            action = self._confirm_option.get("value")
+            if isinstance(action, dict):
+                action = action.get("value")
+        title = tr(
+            "Shut down system?"
+            if action == "shutdown"
+            else "Reboot system?"
+        )
         (title_width, _), _ = self._measure(
             title, theme.font_face, self._font_scale, 1
         )
+        title_color = (
+            theme.accent_text if retro else theme.text
+        )
+        title_y = y1 + 16 if retro else y1 + 32
         self._text(
             frame,
             title,
-            ((self._width - title_width) // 2, y1 + 32),
+            ((self._width - title_width) // 2, title_y),
             theme.font_face,
             self._font_scale,
-            theme.text,
+            title_color,
             1,
             cv2.LINE_AA,
         )
@@ -1812,6 +2102,615 @@ class MenuControlledEnd(ControlledEnd):
             cv2.LINE_AA,
         )
 
+    @staticmethod
+    def _blend(
+        first: tuple[int, int, int],
+        second: tuple[int, int, int],
+        fraction: float,
+    ) -> tuple[int, int, int]:
+        return tuple(
+            int(first[index] + (second[index] - first[index]) * fraction)
+            for index in range(3)
+        )
+
+    @staticmethod
+    def _bevel_rect(
+        frame,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        fill,
+        raised: bool = True,
+    ) -> None:
+        """Win2000-style 3D bevel."""
+
+        cv2.rectangle(frame, (x1, y1), (x2, y2), fill, -1)
+        light = (255, 255, 255)
+        dark = (128, 128, 128)
+        top_left, bottom_right = (
+            (light, dark) if raised else (dark, light)
+        )
+        cv2.line(frame, (x1, y1), (x2, y1), top_left, 1)
+        cv2.line(frame, (x1, y1), (x1, y2), top_left, 1)
+        cv2.line(frame, (x1, y2), (x2, y2), bottom_right, 1)
+        cv2.line(frame, (x2, y1), (x2, y2), bottom_right, 1)
+
+    def _draw_retro_header(self, frame, luna: bool) -> None:
+        theme = self._menu_theme
+        height = self._header_height
+        if luna:
+            top = (255, 150, 60)
+            bottom = theme.header_bg
+            for y in range(height):
+                color = self._blend(
+                    top, bottom, y / max(1, height - 1)
+                )
+                cv2.line(frame, (0, y), (self._width, y), color, 1)
+            cv2.line(
+                frame,
+                (0, height - 1),
+                (self._width, height - 1),
+                (255, 255, 255),
+                1,
+            )
+        else:
+            cv2.rectangle(
+                frame, (0, 0), (self._width, height), theme.header_bg, -1
+            )
+            cv2.line(
+                frame,
+                (0, height - 1),
+                (self._width, height - 1),
+                (255, 255, 255),
+                1,
+            )
+
+        title = self._title or ""
+        self._text(
+            frame,
+            title,
+            (self._padding[0] + 4, height - 5),
+            theme.font_face,
+            self._font_scale,
+            theme.accent_text,
+            1,
+            cv2.LINE_AA,
+        )
+
+        page_text = f"{self._current_page + 1}/{max(1, self._page_count)}"
+        (page_width, _), _ = self._measure(
+            page_text, theme.font_face, self._small_font_scale, 1
+        )
+        if luna:
+            pill_width = page_width + 12
+            x2 = self._width - self._padding[2]
+            x1 = x2 - pill_width
+            y1 = (height - 14) // 2
+            self._rounded_rect(
+                frame, x1, y1, x2, y1 + 14, theme.surface_alt, 7
+            )
+            self._text(
+                frame,
+                page_text,
+                (x1 + 6, y1 + 11),
+                theme.font_face,
+                self._small_font_scale,
+                theme.accent,
+                1,
+                cv2.LINE_AA,
+            )
+        else:
+            controls = 3
+            box = 11
+            gap = 2
+            x = self._width - self._padding[2] - controls * box - gap
+            page_x = x - page_width - 6
+            self._text(
+                frame,
+                page_text,
+                (page_x, height - 5),
+                theme.font_face,
+                self._small_font_scale,
+                theme.accent_text,
+                1,
+                cv2.LINE_AA,
+            )
+            for index in range(controls):
+                bx = x + index * (box + gap)
+                self._bevel_rect(
+                    frame,
+                    bx,
+                    4,
+                    bx + box,
+                    4 + box,
+                    theme.surface_alt,
+                    raised=True,
+                )
+                if index == 0:  # minimise
+                    cv2.line(
+                        frame,
+                        (bx + 3, 4 + box - 4),
+                        (bx + box - 3, 4 + box - 4),
+                        (0, 0, 0),
+                        1,
+                    )
+                elif index == 1:  # maximise
+                    cv2.rectangle(
+                        frame,
+                        (bx + 3, 7),
+                        (bx + box - 3, 4 + box - 3),
+                        (0, 0, 0),
+                        1,
+                    )
+                else:  # close
+                    cv2.line(
+                        frame,
+                        (bx + 3, 7),
+                        (bx + box - 3, 4 + box - 3),
+                        (0, 0, 0),
+                        1,
+                    )
+                    cv2.line(
+                        frame,
+                        (bx + box - 3, 7),
+                        (bx + 3, 4 + box - 3),
+                        (0, 0, 0),
+                        1,
+                    )
+
+    def _draw_win7_header(self, frame) -> None:
+        theme = self._menu_theme
+        height = self._header_height
+        top = (210, 160, 100)
+        bottom = theme.header_bg
+        for y in range(height):
+            color = self._blend(top, bottom, y / max(1, height - 1))
+            cv2.line(frame, (0, y), (self._width, y), color, 1)
+        cv2.line(
+            frame,
+            (0, height - 1),
+            (self._width, height - 1),
+            theme.accent,
+            1,
+        )
+        title = self._title or ""
+        self._text(
+            frame,
+            title,
+            (self._padding[0] + 4, height - 5),
+            theme.font_face,
+            self._font_scale,
+            theme.header_text or theme.text,
+            1,
+            cv2.LINE_AA,
+        )
+        page_text = f"{self._current_page + 1}/{max(1, self._page_count)}"
+        (page_width, _), _ = self._measure(
+            page_text, theme.font_face, self._small_font_scale, 1
+        )
+        pill_width = page_width + 12
+        x2 = self._width - self._padding[2]
+        x1 = x2 - pill_width
+        y1 = (height - 14) // 2
+        self._rounded_rect(
+            frame, x1, y1, x2, y1 + 14, theme.surface_alt, 7
+        )
+        self._text(
+            frame,
+            page_text,
+            (x1 + 6, y1 + 11),
+            theme.font_face,
+            self._small_font_scale,
+            theme.accent,
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _draw_win10_header(self, frame) -> None:
+        theme = self._menu_theme
+        height = self._header_height
+        cv2.rectangle(
+            frame, (0, 0), (self._width, height), theme.header_bg, -1
+        )
+        cv2.rectangle(
+            frame, (0, 0), (3, height), theme.accent, -1
+        )
+        title = self._title or ""
+        self._text(
+            frame,
+            title,
+            (self._padding[0] + 4, height - 5),
+            theme.font_face,
+            self._font_scale,
+            theme.header_text or theme.text,
+            1,
+            cv2.LINE_AA,
+        )
+        page_text = f"{self._current_page + 1}/{max(1, self._page_count)}"
+        (page_width, _), _ = self._measure(
+            page_text, theme.font_face, self._small_font_scale, 1
+        )
+        self._text(
+            frame,
+            page_text,
+            (self._width - self._padding[2] - page_width, height - 5),
+            theme.font_face,
+            self._small_font_scale,
+            theme.header_text_dim or theme.text_dim,
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.line(
+            frame,
+            (0, height - 1),
+            (self._width, height - 1),
+            theme.accent,
+            1,
+        )
+
+    def _draw_retro_row(self, frame, index: int, option: dict) -> None:
+        theme = self._menu_theme
+        style = self._retro_style
+        y1, y2 = self._row_geometry(index)
+        x1 = self._padding[0]
+        x2 = self._width - self._padding[2]
+        selected = index == self._current_index and self._select_index is None
+        enabled = bool(option.get("enable", True))
+
+        if style == "luna":
+            if selected:
+                self._rounded_rect(
+                    frame, x1 + 3, y1 + 1, x2 - 3, y2 - 2,
+                    theme.accent, 4,
+                )
+                cv2.line(
+                    frame,
+                    (x1 + 8, y1 + 3),
+                    (x2 - 8, y1 + 3),
+                    (255, 220, 180),
+                    1,
+                )
+            else:
+                row_bg = (
+                    theme.surface if index % 2 == 0
+                    else theme.surface_alt
+                )
+                cv2.rectangle(frame, (x1, y1), (x2, y2 - 1), row_bg, -1)
+            cv2.line(
+                frame, (x1, y2 - 1), (x2, y2 - 1),
+                theme.border, 1,
+            )
+            foreground = (
+                theme.accent_text if selected
+                else (theme.text if enabled else theme.text_dim)
+            )
+            icon_color = (
+                theme.accent_text if selected
+                else (theme.accent if enabled else theme.text_dim)
+            )
+        elif style == "win2000":
+            if selected:
+                cv2.rectangle(
+                    frame, (x1, y1), (x2, y2 - 1), theme.accent, -1
+                )
+            else:
+                self._bevel_rect(
+                    frame,
+                    x1,
+                    y1,
+                    x2,
+                    y2 - 1,
+                    theme.surface,
+                    raised=False,
+                )
+            foreground = (
+                theme.accent_text if selected
+                else (theme.text if enabled else theme.text_dim)
+            )
+            icon_color = (
+                theme.accent_text if selected
+                else (theme.text if enabled else theme.text_dim)
+            )
+        elif style == "win7":
+            if selected:
+                selection_bg = self._blend(
+                    theme.surface_alt, theme.accent, 0.25
+                )
+                self._rounded_rect(
+                    frame, x1 + 2, y1 + 1, x2 - 2, y2 - 2,
+                    selection_bg, 3,
+                )
+                cv2.rectangle(
+                    frame,
+                    (x1 + 3, y1 + 2),
+                    (x1 + 6, y2 - 3),
+                    theme.accent,
+                    -1,
+                )
+            else:
+                row_bg = (
+                    theme.surface if index % 2 == 0
+                    else theme.surface_alt
+                )
+                cv2.rectangle(frame, (x1, y1), (x2, y2 - 1), row_bg, -1)
+            cv2.line(
+                frame, (x1, y2 - 1), (x2, y2 - 1),
+                theme.border, 1,
+            )
+            foreground = (
+                (theme.selection_text or theme.text)
+                if selected
+                else (theme.text if enabled else theme.text_dim)
+            )
+            icon_color = (
+                theme.accent if selected
+                else (theme.accent if enabled else theme.text_dim)
+            )
+        else:  # win10
+            if selected:
+                self._rounded_rect(
+                    frame, x1 + 2, y1 + 1, x2 - 2, y2 - 2,
+                    theme.accent, 2,
+                )
+            else:
+                row_bg = (
+                    theme.surface if index % 2 == 0
+                    else theme.surface_alt
+                )
+                cv2.rectangle(frame, (x1, y1), (x2, y2 - 1), row_bg, -1)
+            cv2.line(
+                frame, (x1, y2 - 1), (x2, y2 - 1),
+                theme.border, 1,
+            )
+            foreground = (
+                (theme.selection_text or theme.accent_text)
+                if selected
+                else (theme.text if enabled else theme.text_dim)
+            )
+            icon_color = (
+                (theme.selection_text or theme.accent_text)
+                if selected
+                else (theme.text_dim if enabled else theme.text_dim)
+            )
+
+        icon_x = x1 + 5
+        icon_y = y1 + (self._row_height - self._icon_size) // 2
+        draw_icon(
+            frame,
+            self._icon_name(option),
+            icon_x,
+            icon_y,
+            self._icon_size,
+            icon_color,
+        )
+
+        label_x = icon_x + self._icon_size + 5
+        baseline = y1 + (self._row_height + self._font_height) // 2
+        if self._show_index:
+            self._text(
+                frame,
+                str(index + 1),
+                (label_x, baseline),
+                theme.font_face,
+                self._small_font_scale,
+                theme.text_dim if not selected else foreground,
+                1,
+                cv2.LINE_AA,
+            )
+            label_x += 12
+
+        item_type = option["type"].lower()
+        value_text = self._display_value(option)
+        value_width = 34
+        if item_type != MenuItemType.MENU.value:
+            value_width = min(
+                int((x2 - x1) * 0.45),
+                max(
+                    34,
+                    self._measure(
+                        value_text,
+                        theme.font_face,
+                        self._small_font_scale,
+                        1,
+                    )[0][0]
+                    + 12,
+                ),
+            )
+        value_left = x2 - value_width - 4
+        label = self._fit_text(
+            str(option.get("content", "")),
+            max(0, value_left - label_x - 4),
+        )
+        self._text(
+            frame,
+            label,
+            (label_x, baseline),
+            theme.font_face,
+            self._font_scale,
+            foreground,
+            1,
+            cv2.LINE_AA,
+        )
+
+        if item_type == MenuItemType.MENU.value:
+            self._text(
+                frame,
+                ">",
+                (x2 - 14, baseline),
+                theme.font_face,
+                self._font_scale,
+                foreground if selected else theme.accent,
+                1,
+                cv2.LINE_AA,
+            )
+            return
+
+        badge_height = min(18, max(14, y2 - y1 - 6))
+        value_fit = self._fit_text(
+            value_text,
+            max(0, value_width - 12),
+            self._small_font_scale,
+        )
+        (text_width, _), _ = self._measure(
+            value_fit, theme.font_face, self._small_font_scale, 1
+        )
+        badge_width = min(value_width, max(34, text_width + 12))
+        bx1 = x2 - badge_width - 4
+        by1 = (y1 + y2 - badge_height) // 2
+        by2 = by1 + badge_height
+        if style == "luna":
+            background = (
+                theme.surface_alt if not selected else theme.surface
+            )
+            foreground_badge = theme.accent
+            self._rounded_rect(
+                frame, bx1, by1, bx1 + badge_width, by2,
+                background, badge_height // 2,
+            )
+            cv2.rectangle(
+                frame, (bx1, by1), (bx1 + badge_width, by2),
+                theme.accent, 1, cv2.LINE_AA,
+            )
+        elif style == "win2000":
+            background = theme.surface_alt
+            foreground_badge = theme.text
+            self._bevel_rect(
+                frame, bx1, by1, bx1 + badge_width, by2,
+                background, raised=True,
+            )
+        elif style == "win7":
+            background = theme.surface
+            foreground_badge = theme.accent
+            self._rounded_rect(
+                frame, bx1, by1, bx1 + badge_width, by2,
+                background, 4,
+            )
+            cv2.rectangle(
+                frame, (bx1, by1), (bx1 + badge_width, by2),
+                theme.accent, 1, cv2.LINE_AA,
+            )
+        else:  # win10
+            background = theme.surface_alt
+            foreground_badge = (
+                theme.selection_text or theme.text
+            )
+            self._rounded_rect(
+                frame, bx1, by1, bx1 + badge_width, by2,
+                background, 2,
+            )
+            cv2.rectangle(
+                frame, (bx1, by1), (bx1 + badge_width, by2),
+                theme.border, 1, cv2.LINE_AA,
+            )
+        self._text(
+            frame,
+            value_fit,
+            (
+                bx1 + (badge_width - text_width) // 2,
+                by2 - 5,
+            ),
+            theme.font_face,
+            self._small_font_scale,
+            foreground_badge,
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _draw_retro_preview(self, frame) -> None:
+        if not self._show_preview or not self._current_options:
+            return
+        theme = self._menu_theme
+        option = self._current_options[self._current_index]
+        y2 = self._height - self._footer_height - 2
+        y1 = y2 - self._preview_height
+        x1 = self._padding[0]
+        x2 = self._width - self._padding[2]
+        if self._retro_style == "win2000":
+            self._bevel_rect(
+                frame, x1, y1, x2, y2, theme.surface_alt, raised=True
+            )
+        else:
+            radius = 4 if self._retro_style == "win10" else 5
+            self._rounded_rect(
+                frame, x1, y1, x2, y2, theme.surface, radius
+            )
+            cv2.rectangle(
+                frame, (x1 + 2, y1 + 5), (x1 + 5, y2 - 5),
+                theme.accent, -1,
+            )
+            if self._retro_style == "win10":
+                cv2.rectangle(
+                    frame, (x1, y1), (x2, y2),
+                    theme.border, 1, cv2.LINE_AA,
+                )
+
+        label = self._fit_text(
+            str(option.get("content", "")),
+            (x2 - x1) // 2,
+            self._small_font_scale,
+        )
+        self._text(
+            frame,
+            label,
+            (x1 + 10, y1 + 13),
+            theme.font_face,
+            self._small_font_scale,
+            theme.text_dim,
+            1,
+            cv2.LINE_AA,
+        )
+        value = self._fit_text(
+            self._display_value(option),
+            (x2 - x1) // 2,
+        )
+        self._text(
+            frame,
+            value,
+            (x1 + 10, y2 - 6),
+            theme.font_face,
+            self._font_scale,
+            theme.accent if option.get("enable", True) else theme.text_dim,
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _decorate_retro(self, style: str) -> None:
+        self._retro_style = style
+        theme = self._menu_theme
+        sketch = np.full(
+            (self._height, self._width, 3), theme.background, np.uint8
+        )
+        if style == "luna":
+            self._draw_retro_header(sketch, True)
+        elif style == "win2000":
+            self._draw_retro_header(sketch, False)
+        elif style == "win7":
+            self._draw_win7_header(sketch)
+        else:
+            self._draw_win10_header(sketch)
+        if self._select_index is None:
+            for index, option in enumerate(self._current_options):
+                self._draw_retro_row(sketch, index, option)
+            self._draw_retro_preview(sketch)
+        else:
+            item_type = self._current_options[
+                self._current_index
+            ]["type"].lower()
+            if item_type == MenuItemType.NUMERAL:
+                self._draw_numeric_edit(sketch)
+            elif item_type == MenuItemType.OPTION:
+                self._draw_option_edit(sketch)
+            else:
+                for index, option in enumerate(self._current_options):
+                    self._draw_retro_row(sketch, index, option)
+        self._draw_footer(sketch)
+        self._flush_text(sketch)
+        if self._confirm_power:
+            self._draw_power_confirm(sketch)
+            self._flush_text(sketch)
+        self._frame_list.put(sketch)
+
     def _decorate_classic(self) -> None:
         """Draw the original pre-0.3 menu layout.
 
@@ -1820,6 +2719,7 @@ class MenuControlledEnd(ControlledEnd):
         header/card/footer renderer.
         """
 
+        self._retro_style = None
         sketch = np.full(
             (self._height, self._width, 3),
             self._theme["background"],
@@ -1841,16 +2741,22 @@ class MenuControlledEnd(ControlledEnd):
                 self._numerical_slide_bar(sketch)
             elif item_type == MenuItemType.OPTION:
                 self._option_menu(sketch)
-        if self._confirm_reboot:
-            self._draw_reboot_confirm(sketch)
         self._flush_text(sketch)
+        if self._confirm_power:
+            self._draw_power_confirm(sketch)
+            self._flush_text(sketch)
         self._frame_list.put(sketch)
 
     def decorate(self):
-        if self._menu_theme.render_style == "classic":
+        style = self._menu_theme.render_style
+        if style == "classic":
             self._decorate_classic()
             return
+        if style in {"luna", "win2000", "win7", "win10"}:
+            self._decorate_retro(style)
+            return
 
+        self._retro_style = None
         theme = self._menu_theme
         sketch = np.full(
             (self._height, self._width, 3), theme.background, np.uint8
@@ -1872,9 +2778,10 @@ class MenuControlledEnd(ControlledEnd):
                 for index, option in enumerate(self._current_options):
                     self._draw_row(sketch, index, option)
         self._draw_footer(sketch)
-        if self._confirm_reboot:
-            self._draw_reboot_confirm(sketch)
         self._flush_text(sketch)
+        if self._confirm_power:
+            self._draw_power_confirm(sketch)
+            self._flush_text(sketch)
         self._frame_list.put(sketch)
 
     def _next_step(self):
@@ -1924,6 +2831,7 @@ class MenuControlledEnd(ControlledEnd):
         value, option_list = self._value_temp, item['options']
         option_index = option_list.index(value)
         self._value_temp = option_list[option_index - 1]
+        self._preview_theme()
 
     def _option_down(self):
         item = self._current_options[self._select_index]
@@ -1935,13 +2843,17 @@ class MenuControlledEnd(ControlledEnd):
             self._value_temp = option_list[option_index + 1]
         except IndexError:
             self._value_temp = option_list[0]
+        self._preview_theme()
 
     def center_press_action(self):
-        if self._confirm_reboot:
+        if self._confirm_power:
             option = self._confirm_option
-            self._confirm_reboot = False
+            self._confirm_power = False
             self._confirm_option = None
-            self._send_current_message(option)
+            if option is not None and option.get("id") == "power":
+                self._send_power_action(option)
+            else:
+                self._send_current_message(option)
             self.decorate()
             return
         if self._select_index is not None:
@@ -2014,12 +2926,13 @@ class MenuControlledEnd(ControlledEnd):
         self.center_press_action()
 
     def cross_press_action(self):
-        if self._confirm_reboot:
-            self._confirm_reboot = False
+        if self._confirm_power:
+            self._confirm_power = False
             self._confirm_option = None
             self.decorate()
             return
         if self._select_index is not None:
+            self._cancel_theme_preview()
             self._select_index = None
             self.decorate()
         else:
@@ -2030,6 +2943,7 @@ class MenuControlledEnd(ControlledEnd):
                 self._irq(self._from)
 
     def cross_long_press_action(self):
+        self._cancel_theme_preview()
         self._irq(self._from)
 
     def rotary_encoder_counter_clockwise(self):
@@ -2066,7 +2980,7 @@ class MenuControlledEnd(ControlledEnd):
         self.center_press_action()
 
     def shutter_press_action(self):
-        if self._confirm_reboot:
+        if self._confirm_power:
             self.center_press_action()
             return
         if self._select_index is not None:
@@ -2092,11 +3006,13 @@ class MenuControlledEnd(ControlledEnd):
 
     def on_enter(self, last_id):
         self._frame_list = queue.SimpleQueue()
-        self._confirm_reboot = False
+        self._confirm_power = False
         self._confirm_option = None
+        self._finish_theme_preview()
         self.decorate()
 
     def on_exit(self):
+        self._cancel_theme_preview()
         self._frame_list.put(
             np.full(
                 (self._height, self._width, 3),

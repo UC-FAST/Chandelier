@@ -21,7 +21,7 @@ from chandelier.i18n import tr
 from chandelier.services.system_stats import SystemStats
 from chandelier.ui.controlled_end import ControlledEnd
 from chandelier.ui.text_render import get_renderer
-from chandelier.ui.themes import get_theme
+from chandelier.ui.themes import get_active_theme
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +71,6 @@ class SystemMonitor(ControlledEnd):
         self._stats = stats
         self._width = config.screen.width
         self._height = config.screen.height
-        self._theme = get_theme("dark_pro")
         self._renderer = get_renderer()
         self._exit_event = threading.Event()
         self._decorator = _PageCursor(len(self.PAGE_TITLES))
@@ -79,6 +78,11 @@ class SystemMonitor(ControlledEnd):
         self._label_height = 9
         self._value_height = 10
         self._footer_height_px = 8
+
+    @property
+    def _theme(self):
+        # Follow the menu theme, including live theme changes.
+        return get_active_theme()
 
     # ------------------------------------------------------------------
     # Report pages
@@ -251,6 +255,9 @@ class SystemMonitor(ControlledEnd):
 
     def _draw_header(self, frame: np.ndarray) -> None:
         theme = self._theme
+        header_text = theme.header_text or theme.text
+        header_dim = theme.header_text_dim or theme.text_dim
+        header_accent = theme.header_text or theme.accent
         page = self._decorator.current_page
         cv2.rectangle(
             frame,
@@ -259,13 +266,15 @@ class SystemMonitor(ControlledEnd):
             theme.header_bg,
             -1,
         )
-        cv2.rectangle(frame, (0, 0), (3, self.HEADER_HEIGHT), theme.accent, -1)
+        cv2.rectangle(
+            frame, (0, 0), (3, self.HEADER_HEIGHT), header_accent, -1
+        )
         self._put_text(
             frame,
             "SYSTEM",
             (10, 19),
             self._header_height_px,
-            theme.accent,
+            header_accent,
         )
         if page < len(self.PAGE_TITLES):
             title = self.PAGE_TITLES[page]
@@ -276,7 +285,7 @@ class SystemMonitor(ControlledEnd):
             title,
             (68, 19),
             self._header_height_px,
-            theme.text,
+            header_text,
         )
 
         page_text = f"{page + 1}/{self._decorator.total_pages}"
@@ -286,13 +295,13 @@ class SystemMonitor(ControlledEnd):
             page_text,
             (self._width - 10 - page_width, 18),
             self._label_height,
-            theme.text_dim,
+            header_dim,
         )
         cv2.line(
             frame,
             (0, self.HEADER_HEIGHT - 1),
             (self._width, self.HEADER_HEIGHT - 1),
-            theme.accent,
+            header_accent,
             1,
             cv2.LINE_AA,
         )
@@ -309,7 +318,7 @@ class SystemMonitor(ControlledEnd):
     ) -> None:
         theme = self._theme
         left, right = 10, self._width - 10
-        row_bg = theme.surface if index % 2 == 0 else theme.background
+        row_bg = theme.surface if index % 2 == 0 else theme.surface_alt
         cv2.rectangle(
             frame, (0, y), (self._width, y + row_height), row_bg, -1
         )
@@ -338,7 +347,7 @@ class SystemMonitor(ControlledEnd):
                     frame,
                     (bar_left, bar_y),
                     (bar_right, bar_y + 5),
-                    (48, 48, 48),
+                    theme.surface_alt,
                     -1,
                 )
                 fill = int(
@@ -405,6 +414,8 @@ class SystemMonitor(ControlledEnd):
 
     def _draw_footer(self, frame: np.ndarray) -> None:
         theme = self._theme
+        footer_text = theme.header_text_dim or theme.text_dim
+        footer_accent = theme.header_text or theme.accent
         y0 = self._height - self.FOOTER_HEIGHT
         cv2.rectangle(
             frame, (0, y0), (self._width, self._height), theme.header_bg, -1
@@ -422,7 +433,7 @@ class SystemMonitor(ControlledEnd):
             "UP/DOWN PAGE",
             (8, self._height - 5),
             self._footer_height_px,
-            theme.text_dim,
+            footer_text,
         )
         exit_text = "CROSS EXIT"
         exit_width = self._measure_width(
@@ -433,7 +444,7 @@ class SystemMonitor(ControlledEnd):
             exit_text,
             (self._width - 8 - exit_width, self._height - 5),
             self._footer_height_px,
-            theme.text_dim,
+            footer_text,
         )
 
         page = self._decorator.current_page
@@ -446,14 +457,14 @@ class SystemMonitor(ControlledEnd):
             x = start_x + index * spacing
             if index == page:
                 cv2.circle(
-                    frame, (x, center_y), 3, theme.accent, -1, cv2.LINE_AA
+                    frame, (x, center_y), 3, footer_accent, -1, cv2.LINE_AA
                 )
             else:
                 cv2.circle(
                     frame,
                     (x, center_y),
                     2,
-                    theme.text_dim,
+                    footer_text,
                     1,
                     cv2.LINE_AA,
                 )

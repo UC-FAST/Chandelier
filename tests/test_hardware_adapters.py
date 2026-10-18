@@ -110,6 +110,15 @@ def test_display_initialises_and_writes_rgb565(monkeypatch):
     )
     assert payload[:2] == b"\x00\x1f"  # RGB565 blue, big-endian
 
+    display.clear()
+    payload = next(
+        data
+        for kind, data in FakeSpiDev.instances[-1].writes[::-1]
+        if kind == "bytes2"
+    )
+    assert len(payload) == 320 * 240 * 2
+    assert payload == bytes(len(payload))
+
     display.close()
     assert FakeSpiDev.instances[-1].closed is True
 

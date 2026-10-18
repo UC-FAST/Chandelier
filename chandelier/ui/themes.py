@@ -41,8 +41,11 @@ class MenuTheme:
     irq: tuple[int, int, int]
     cursor_style: str = "fill"  # "fill" | "bar" | "outline"
     font_face: int = cv2.FONT_HERSHEY_SIMPLEX
-    render_style: str = "modern"  # "modern" | "classic"
+    render_style: str = "modern"  # "modern" | "classic" | "luna" | "win2000"
     disabled_cursor: tuple[int, int, int] | None = None
+    header_text: tuple[int, int, int] | None = None
+    header_text_dim: tuple[int, int, int] | None = None
+    selection_text: tuple[int, int, int] | None = None
 
     def color_for_type(self, item_type: str) -> tuple[int, int, int]:
         return {
@@ -165,7 +168,135 @@ THEMES: dict[str, MenuTheme] = {
         irq=(90, 90, 230),
         cursor_style="bar",
     ),
+    "xp_luna": MenuTheme(
+        id="xp_luna",
+        label="Windows XP",
+        # Windows XP "Luna" blue: warm window grey, blue title bar,
+        # navy selection and pale blue highlights (all BGR).
+        background=(216, 233, 236),
+        header_bg=(227, 84, 0),
+        surface=(255, 255, 255),
+        surface_alt=(255, 240, 224),
+        border=(180, 180, 180),
+        footer_bg=(240, 214, 200),
+        text=(20, 20, 20),
+        text_dim=(110, 110, 110),
+        accent=(197, 106, 49),
+        accent_text=(255, 255, 255),
+        success=(80, 175, 76),
+        warning=(0, 165, 255),
+        danger=(40, 40, 200),
+        numeral=(160, 90, 20),
+        msg=(100, 100, 100),
+        option=(140, 60, 20),
+        irq=(150, 40, 140),
+        cursor_style="fill",
+        render_style="luna",
+        header_text=(255, 255, 255),
+        header_text_dim=(255, 235, 220),
+    ),
+    "win2000": MenuTheme(
+        id="win2000",
+        label="Windows 2000",
+        # Classic grey 3D UI with a navy title bar and bevel edges (BGR).
+        background=(192, 192, 192),
+        header_bg=(128, 0, 0),
+        surface=(192, 192, 192),
+        surface_alt=(200, 208, 212),
+        border=(128, 128, 128),
+        footer_bg=(192, 192, 192),
+        text=(0, 0, 0),
+        text_dim=(64, 64, 64),
+        accent=(128, 0, 0),
+        accent_text=(255, 255, 255),
+        success=(0, 128, 0),
+        warning=(0, 128, 255),
+        danger=(0, 0, 192),
+        numeral=(128, 0, 0),
+        msg=(80, 80, 80),
+        option=(128, 0, 128),
+        irq=(128, 0, 128),
+        cursor_style="fill",
+        render_style="win2000",
+        header_text=(255, 255, 255),
+        header_text_dim=(200, 200, 200),
+    ),
+    "win7": MenuTheme(
+        id="win7",
+        label="Windows 7",
+        # Windows 7 Aero glass: soft blue title bar, white window with pale
+        # blue selection (all BGR).
+        background=(240, 240, 240),
+        header_bg=(160, 100, 50),
+        surface=(255, 255, 255),
+        surface_alt=(250, 235, 220),
+        border=(190, 190, 190),
+        footer_bg=(232, 232, 232),
+        text=(20, 20, 20),
+        text_dim=(100, 100, 100),
+        accent=(255, 153, 51),
+        accent_text=(255, 255, 255),
+        success=(80, 160, 70),
+        warning=(0, 150, 230),
+        danger=(40, 40, 200),
+        numeral=(200, 120, 20),
+        msg=(90, 90, 90),
+        option=(160, 80, 20),
+        irq=(160, 50, 140),
+        cursor_style="fill",
+        render_style="win7",
+        header_text=(255, 255, 255),
+        header_text_dim=(225, 235, 245),
+        selection_text=(20, 20, 20),
+    ),
+    "win10": MenuTheme(
+        id="win10",
+        label="Windows 10",
+        # Windows 10 dark Fluent: near-black surfaces with the #0078D7
+        # accent blue (BGR).
+        background=(32, 32, 32),
+        header_bg=(32, 32, 32),
+        surface=(45, 45, 45),
+        surface_alt=(58, 58, 58),
+        border=(70, 70, 70),
+        footer_bg=(32, 32, 32),
+        text=(245, 245, 245),
+        text_dim=(160, 160, 160),
+        accent=(215, 120, 0),
+        accent_text=(255, 255, 255),
+        success=(70, 180, 70),
+        warning=(0, 170, 255),
+        danger=(60, 60, 220),
+        numeral=(0, 170, 255),
+        msg=(160, 160, 160),
+        option=(200, 120, 220),
+        irq=(230, 90, 200),
+        cursor_style="fill",
+        render_style="win10",
+        header_text=(255, 255, 255),
+        header_text_dim=(200, 200, 200),
+        selection_text=(255, 255, 255),
+    ),
 }
+
+
+_active_theme_id = DEFAULT_THEME_ID
+
+
+def set_active_theme(theme_id: str | None) -> str:
+    """Remember the menu theme for non-menu screens (system monitor, ...)."""
+
+    global _active_theme_id
+    _active_theme_id = theme_id if theme_id in THEMES else DEFAULT_THEME_ID
+    return _active_theme_id
+
+
+def active_theme_id() -> str:
+    return _active_theme_id
+
+
+def get_active_theme() -> "MenuTheme":
+    return get_theme(_active_theme_id)
 
 
 def get_theme(theme_id: str | None) -> MenuTheme:

@@ -269,6 +269,71 @@ def test_ensure_menu_defaults_adds_localizer_section():
     assert ensure_menu_defaults(tree) is False
 
 
+def test_shipped_focus_menu_has_af_controls():
+    tree = load_menu_config()
+    focus_ids = [option["id"] for option in tree["camera"]["focus"]["options"]]
+    assert focus_ids == [
+        "af_mode",
+        "af_trigger",
+        "focus_position",
+        "af_speed",
+        "af_range",
+        "mf_assist",
+    ]
+    manual_ids = [
+        option["id"] for option in tree["camera"]["manual"]["options"]
+    ]
+    assert "manual_focus" not in manual_ids
+    assert "focus_position" not in manual_ids
+
+
+def test_ensure_menu_defaults_migrates_legacy_focus():
+    from chandelier.menu_defaults import ensure_menu_defaults
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "manual": {
+                "title": "Manual",
+                "options": [
+                    {
+                        "id": "manual_focus",
+                        "content": "Manual Focus",
+                        "type": "bool",
+                        "value": True,
+                    },
+                    {
+                        "id": "focus_position",
+                        "content": "Focus Pos",
+                        "type": "numeral",
+                        "value": 250,
+                        "min": 0,
+                        "max": 1000,
+                        "step": 10,
+                    },
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+    ensure_menu_defaults(tree)
+
+    focus_options = {
+        option["id"]: option
+        for option in tree["camera"]["focus"]["options"]
+    }
+    assert focus_options["af_mode"]["value"]["value"] == 0
+    assert focus_options["focus_position"]["value"] == 250
+    assert focus_options["focus_position"]["enable_if"] == {
+        "id": "af_mode",
+        "value": 0,
+    }
+    manual_ids = {
+        option["id"] for option in tree["camera"]["manual"]["options"]
+    }
+    assert "manual_focus" not in manual_ids
+
+
 def test_ensure_menu_defaults_reorders_options_by_frequency():
     from chandelier.menu_defaults import ensure_menu_defaults
 

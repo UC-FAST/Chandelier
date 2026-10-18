@@ -136,21 +136,25 @@ class Controller:
         end.msg_receiver(sender, payload)
 
     def _handle_controller_message(self, payload: Any) -> None:
-        # Menu MSG options route ``(command, menu_tree)``; direct callers may
-        # pass the command string itself.
+        # Menu options can route a command string, a ``(command, tree)``
+        # tuple, or a complete option dict (the combined power selector).
         command = payload
-        if isinstance(payload, (tuple, list)) and payload:
+        if isinstance(payload, dict):
+            value = payload.get("value")
+            if isinstance(value, dict):
+                value = value.get("value")
+            command = value
+        elif isinstance(payload, (tuple, list)) and payload:
             command = payload[0]
-        if command == "restart":
+
+        if command in {"restart", "reboot"}:
             self._reboot()
+        elif command == "shutdown":
+            self._shutdown()
 
     @staticmethod
-    def _reboot() -> None:
-        logger.warning("restart requested; rebooting")
-        commands = (
-            ["sudo", "-n", "reboot"],
-            ["systemctl", "reboot"],
-        )
+    def _run_power_command(commands, action: str) -> None:
+        logger.warning("%s requested", action)
         for command in commands:
             try:
                 result = subprocess.run(
@@ -160,17 +164,43 @@ class Controller:
                     text=True,
                 )
             except (FileNotFoundError, OSError) as exc:
-                logger.warning("reboot command %s unavailable: %s", command, exc)
+                logger.warning(
+                    "%s command %s unavailable: %s",
+                    action,
+                    command,
+                    exc,
+                )
                 continue
             if result.returncode == 0:
                 return
             logger.warning(
-                "reboot command %s failed (%s): %s",
+                "%s command %s failed (%s): %s",
+                action,
                 command,
                 result.returncode,
                 (result.stderr or "").strip(),
             )
-        logger.error("all reboot commands failed")
+        logger.error("all %s commands failed", action)
+
+    @staticmethod
+    def _reboot() -> None:
+        Controller._run_power_command(
+            (
+                ["sudo", "-n", "reboot"],
+                ["systemctl", "reboot"],
+            ),
+            "reboot",
+        )
+
+    @staticmethod
+    def _shutdown() -> None:
+        Controller._run_power_command(
+            (
+                ["sudo", "-n", "poweroff"],
+                ["systemctl", "poweroff"],
+            ),
+            "shutdown",
+        )
 
     # ------------------------------------------------------------------
     # Input dispatch
@@ -283,6 +313,10 @@ class Controller:
             return
         self._shutdown_done = True
         self._stop_event.set()
+        try:
+            self._display.clear()
+        except Exception:
+            logger.debug("failed to clear display", exc_info=True)
         try:
             self._display.backlight(False)
         except Exception:

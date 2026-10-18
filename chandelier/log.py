@@ -14,12 +14,14 @@ import os
 import time
 
 _RESET = "\033[0m"
+# Every level uses the bold font weight so the level labels keep the same
+# typeface; DEBUG is distinguished by colour (cyan) instead of font weight.
 _COLORS = {
-    logging.DEBUG: "\033[0;32m",       # green
-    logging.INFO: "\033[1;32m",        # bright green
-    logging.WARNING: "\033[1;33m",     # bright yellow
-    logging.ERROR: "\033[1;31m",       # bright red
-    logging.CRITICAL: "\033[1;35m",    # bright magenta
+    logging.DEBUG: "\033[1;36m",       # bold cyan
+    logging.INFO: "\033[1;32m",        # bold green
+    logging.WARNING: "\033[1;33m",     # bold yellow
+    logging.ERROR: "\033[1;31m",       # bold red
+    logging.CRITICAL: "\033[1;35m",    # bold magenta
 }
 _LEVEL_NAMES = {
     logging.DEBUG: "DEBUG",

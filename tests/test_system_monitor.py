@@ -86,6 +86,15 @@ def test_monitor_rows_parse_label_value_and_units():
     assert rows[3][:2] == ("Interface", "--")
 
 
+def test_monitor_follows_menu_theme():
+    from chandelier.ui.themes import set_active_theme
+
+    set_active_theme("xp_luna")
+    monitor = _monitor()
+    assert monitor._theme.id == "xp_luna"
+    assert monitor._compose_frame().any()
+
+
 def test_monitor_renders_translated_labels():
     from chandelier.i18n import translator
 

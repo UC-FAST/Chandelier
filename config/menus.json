@@ -437,10 +437,109 @@
             "title": "Focus",
             "options": [
                 {
+                    "id": "af_mode",
+                    "content": "AF Mode",
+                    "type": "option",
+                    "icon": "focus",
+                    "value": {
+                        "content": "Continuous AF",
+                        "value": 2
+                    },
+                    "options": [
+                        {
+                            "content": "Continuous AF",
+                            "value": 2
+                        },
+                        {
+                            "content": "Single AF",
+                            "value": 1
+                        },
+                        {
+                            "content": "Manual",
+                            "value": 0
+                        }
+                    ]
+                },
+                {
+                    "id": "af_trigger",
+                    "content": "AF Trigger",
+                    "type": "msg",
+                    "icon": "focus",
+                    "badge": "AF",
+                    "receiver": "camera",
+                    "value": "autofocus"
+                },
+                {
+                    "id": "focus_position",
+                    "content": "Focus Pos",
+                    "type": "numeral",
+                    "icon": "focus",
+                    "value": 500,
+                    "min": 0,
+                    "max": 1000,
+                    "step": 10,
+                    "enable": false,
+                    "format": "lens",
+                    "enable_if": {
+                        "id": "af_mode",
+                        "value": 0
+                    },
+                    "step_options": [
+                        1,
+                        10,
+                        50
+                    ]
+                },
+                {
+                    "id": "af_speed",
+                    "content": "AF Speed",
+                    "type": "option",
+                    "icon": "focus",
+                    "value": {
+                        "content": "Normal",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Normal",
+                            "value": 0
+                        },
+                        {
+                            "content": "Fast",
+                            "value": 1
+                        }
+                    ]
+                },
+                {
+                    "id": "af_range",
+                    "content": "AF Range",
+                    "type": "option",
+                    "icon": "focus",
+                    "value": {
+                        "content": "Normal",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Normal",
+                            "value": 0
+                        },
+                        {
+                            "content": "Macro",
+                            "value": 1
+                        },
+                        {
+                            "content": "Full",
+                            "value": 2
+                        }
+                    ]
+                },
+                {
                     "id": "mf_assist",
                     "content": "MF Assist",
                     "type": "bool",
-                    "value": false
+                    "value": false,
+                    "icon": "focus"
                 }
             ]
         },
@@ -451,7 +550,7 @@
                     "id": "awb",
                     "content": "Auto White Balance",
                     "type": "bool",
-                    "value": true,
+                    "value": false,
                     "set_enable": [
                         "awb_mode"
                     ],
@@ -501,14 +600,14 @@
                             "value": 7
                         }
                     ],
-                    "enable": true
+                    "enable": false
                 },
                 {
                     "id": "color_gains",
                     "content": "Color Gains",
                     "type": "menu",
                     "value": "color_gains",
-                    "enable": false
+                    "enable": true
                 }
             ]
         },
@@ -519,7 +618,7 @@
                     "id": "red_gain",
                     "content": "Red Gain",
                     "type": "numeral",
-                    "value": 23,
+                    "value": 0,
                     "min": 0,
                     "max": 32,
                     "step": 1,
@@ -532,7 +631,7 @@
                     "id": "blue_gain",
                     "content": "Blue Gain",
                     "type": "numeral",
-                    "value": 3,
+                    "value": 0,
                     "min": 0,
                     "max": 32,
                     "step": 1,
@@ -693,27 +792,6 @@
                     "type": "bool",
                     "icon": "wb",
                     "value": false
-                },
-                {
-                    "id": "manual_focus",
-                    "content": "Manual Focus",
-                    "type": "bool",
-                    "icon": "focus",
-                    "value": false,
-                    "set_enable": [
-                        "focus_position"
-                    ]
-                },
-                {
-                    "id": "focus_position",
-                    "content": "Focus Pos",
-                    "type": "numeral",
-                    "icon": "focus",
-                    "value": 500,
-                    "min": 0,
-                    "max": 1000,
-                    "step": 10,
-                    "enable": false
                 },
                 {
                     "id": "saturation",
@@ -908,8 +986,8 @@
                     "type": "option",
                     "icon": "theme",
                     "value": {
-                        "content": "Dark Pro",
-                        "value": "dark_pro"
+                        "content": "Windows 2000",
+                        "value": "win2000"
                     },
                     "options": [
                         {
@@ -927,17 +1005,45 @@
                         {
                             "content": "Classic",
                             "value": "classic"
+                        },
+                        {
+                            "content": "Windows XP",
+                            "value": "xp_luna"
+                        },
+                        {
+                            "content": "Windows 2000",
+                            "value": "win2000"
+                        },
+                        {
+                            "content": "Windows 7",
+                            "value": "win7"
+                        },
+                        {
+                            "content": "Windows 10",
+                            "value": "win10"
                         }
                     ]
                 },
                 {
-                    "id": "reboot",
-                    "content": "Reboot System",
-                    "type": "msg",
+                    "id": "power",
+                    "content": "Power Action",
+                    "type": "option",
                     "icon": "power",
-                    "badge": "REBOOT",
                     "receiver": "controller",
-                    "value": "restart"
+                    "value": {
+                        "content": "Shutdown",
+                        "value": "shutdown"
+                    },
+                    "options": [
+                        {
+                            "content": "Reboot",
+                            "value": "reboot"
+                        },
+                        {
+                            "content": "Shutdown",
+                            "value": "shutdown"
+                        }
+                    ]
                 }
             ]
         }

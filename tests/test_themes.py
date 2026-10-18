@@ -7,9 +7,22 @@ from chandelier.ui.themes import (
 
 
 def test_registry_and_fallback():
-    assert set(THEMES) == {"dark_pro", "high_contrast", "industrial", "classic"}
+    assert set(THEMES) == {
+        "dark_pro",
+        "high_contrast",
+        "industrial",
+        "classic",
+        "xp_luna",
+        "win2000",
+        "win7",
+        "win10",
+    }
     assert get_theme("dark_pro").id == "dark_pro"
     assert get_theme("classic").render_style == "classic"
+    assert get_theme("xp_luna").render_style == "luna"
+    assert get_theme("win2000").render_style == "win2000"
+    assert get_theme("win7").render_style == "win7"
+    assert get_theme("win10").render_style == "win10"
     assert get_theme("does_not_exist").id == DEFAULT_THEME_ID
 
 

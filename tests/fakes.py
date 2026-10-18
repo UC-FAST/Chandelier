@@ -13,10 +13,14 @@ class FakeDisplay:
         self.height = height
         self.frames: list[np.ndarray] = []
         self.backlight_state = True
+        self.cleared = False
         self.closed = False
 
     def show(self, frame: np.ndarray) -> None:
         self.frames.append(frame.copy())
+
+    def clear(self) -> None:
+        self.cleared = True
 
     def backlight(self, state: bool) -> None:
         self.backlight_state = state
@@ -146,6 +150,21 @@ class FakeCamera:
 
     def set_focus(self, manual, position) -> None:
         self._record("set_focus", manual=manual, position=position)
+
+    def set_focus_mode(self, mode, position=500) -> None:
+        self._record("set_focus_mode", mode=mode, position=position)
+
+    def set_focus_position(self, position) -> None:
+        self._record("set_focus_position", position=position)
+
+    def set_af_speed(self, speed) -> None:
+        self._record("set_af_speed", speed=speed)
+
+    def set_af_range(self, af_range) -> None:
+        self._record("set_af_range", af_range=af_range)
+
+    def trigger_autofocus(self) -> None:
+        self._record("trigger_autofocus")
 
     def save_frame(self, **kwargs) -> None:
         self.saved.append(kwargs)

@@ -138,8 +138,10 @@ def test_pro_controls_are_applied():
     _set_option(tree, "exp_compensation", 1.5)
     _set_option(tree, "ae_lock", True)
     _set_option(tree, "awb_lock", True)
-    _set_option(tree, "manual_focus", True)
+    _set_option(tree, "af_mode", {"content": "Manual", "value": 0})
     _set_option(tree, "focus_position", 300)
+    _set_option(tree, "af_speed", {"content": "Fast", "value": 1})
+    _set_option(tree, "af_range", {"content": "Macro", "value": 1})
     end.load_settings()
 
     calls = dict(camera.calls)
@@ -147,9 +149,26 @@ def test_pro_controls_are_applied():
     assert calls["set_exposure_value"]["value"] == 1.5
     assert calls["set_ae_lock"]["enable"] is True
     assert calls["set_awb_lock"]["enable"] is True
-    assert calls["set_focus"]["manual"] is True
-    assert calls["set_focus"]["position"] == 300
+    assert calls["set_focus_mode"]["mode"] == 0
+    assert calls["set_focus_mode"]["position"] == 300
+    assert calls["set_af_speed"]["speed"] == 1
+    assert calls["set_af_range"]["af_range"] == 1
     assert "set_image_controls" in calls
+
+
+def test_focus_message_and_center_trigger_autofocus():
+    end, camera, tree = _make_end()
+    # A normal tree update from the Focus section must not trigger AF.
+    end.msg_receiver("menu", ("focus", tree))
+    assert not any(name == "trigger_autofocus" for name, _ in camera.calls)
+
+    end.msg_receiver("menu", ("autofocus", tree))
+    assert any(name == "trigger_autofocus" for name, _ in camera.calls)
+
+    before = sum(name == "trigger_autofocus" for name, _ in camera.calls)
+    end.center_press_action()
+    after = sum(name == "trigger_autofocus" for name, _ in camera.calls)
+    assert after == before + 1
 
 
 def test_display_and_capture_settings_are_read():

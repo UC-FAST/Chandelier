@@ -76,12 +76,17 @@ class CameraState:
     record_mode: bool = False
     record_resolution: tuple[int, int] = (1280, 720)
 
+    # Focus
+    focus_mode: int = 2  # 0 manual, 1 single AF, 2 continuous AF
+    focus_position: float = 500.0
+    af_speed: int = 0
+    af_range: int = 0
+    manual_focus: bool = False  # derived from focus_mode
+
     # Manual controls
     exp_compensation: float = 0.0
     ae_lock: bool = False
     awb_lock: bool = False
-    manual_focus: bool = False
-    focus_position: float = 500.0
     saturation: float = 1.0
     contrast: float = 1.0
     sharpness: float = 1.0
@@ -177,9 +182,12 @@ class CameraControlledEnd(ControlledEnd):
         metadata = self._camera.metadata
         if not metadata:
             return None
-        return {
+        report = {
             "EPTime {}": metadata["ExposureTime"],
             "FocusFoM {}": self._camera.frame_quality,
+            "AF {}": {0: "MF", 1: "AF-S", 2: "AF-C"}.get(
+                self._state.focus_mode, "AF"
+            ),
             "FrameDur {}": metadata["FrameDuration"],
             "AnGain {}": round(metadata["AnalogueGain"], 2),
             "DigGain {}": round(metadata["DigitalGain"], 2),
@@ -188,6 +196,10 @@ class CameraControlledEnd(ControlledEnd):
             "FPS {}": round(self._camera.frame_per_second, 1),
             "FocusAvg {}": int(self._filter.calc()) if len(self._filter) else 0,
         }
+        lens_position = metadata.get("LensPosition")
+        if lens_position is not None:
+            report["Lens {}"] = round(lens_position, 2)
+        return report
 
     @staticmethod
     def _format_shutter(microseconds: float) -> str:
@@ -411,8 +423,17 @@ class CameraControlledEnd(ControlledEnd):
     def cross_press_action(self) -> None:
         pass
 
+    def _trigger_focus(self) -> None:
+        if self._state.is_busy or (
+            self._capture_session is not None
+            and self._capture_session.active
+        ):
+            return
+        self._camera.trigger_autofocus()
+        self._toast.set_text("AF")
+
     def center_press_action(self) -> None:
-        pass
+        self._trigger_focus()
 
     def rotary_encoder_clockwise(self) -> None:
         pass
@@ -421,7 +442,7 @@ class CameraControlledEnd(ControlledEnd):
         pass
 
     def rotary_encoder_select(self) -> None:
-        pass
+        self._trigger_focus()
 
     # ------------------------------------------------------------------
     # Camera settings
@@ -470,14 +491,19 @@ class CameraControlledEnd(ControlledEnd):
                 self._option_value_or(MenuOptionId.BLUE_GAIN.value, 1.0),
             )
 
+    def _apply_focus(self) -> None:
+        state = self._state
+        self._camera.set_af_speed(state.af_speed)
+        self._camera.set_af_range(state.af_range)
+        self._camera.set_focus_mode(
+            state.focus_mode, int(state.focus_position)
+        )
+
     def _apply_manual_controls(self) -> None:
         self._camera.set_image_controls(
             saturation=self._state.saturation,
             contrast=self._state.contrast,
             sharpness=self._state.sharpness,
-        )
-        self._camera.set_focus(
-            self._state.manual_focus, int(self._state.focus_position)
         )
         # Locks are applied last so they override the automatic settings.
         if self._state.ae_lock:
@@ -588,11 +614,28 @@ class CameraControlledEnd(ControlledEnd):
         state.awb_lock = bool(
             self._option_value_or(MenuOptionId.AWB_LOCK.value, False)
         )
-        state.manual_focus = bool(
-            self._option_value_or(MenuOptionId.MANUAL_FOCUS.value, False)
+        focus_mode = self._option_value_or(
+            MenuOptionId.AF_MODE.value, None
         )
+        if focus_mode is None:
+            # Older menus only had the manual-focus bool.
+            legacy_manual = bool(
+                self._option_value_or(
+                    MenuOptionId.MANUAL_FOCUS.value, False
+                )
+            )
+            state.focus_mode = 0 if legacy_manual else 2
+        else:
+            state.focus_mode = int(focus_mode)
+        state.manual_focus = state.focus_mode == 0
         state.focus_position = float(
             self._option_value_or(MenuOptionId.FOCUS_POSITION.value, 500)
+        )
+        state.af_speed = int(
+            self._option_value_or(MenuOptionId.AF_SPEED.value, 0)
+        )
+        state.af_range = int(
+            self._option_value_or(MenuOptionId.AF_RANGE.value, 0)
         )
         state.saturation = float(
             self._option_value_or(MenuOptionId.SATURATION.value, 1.0)
@@ -613,14 +656,23 @@ class CameraControlledEnd(ControlledEnd):
         self._apply_exposure()
         self._apply_awb()
         self._apply_manual_controls()
+        self._apply_focus()
         self._apply_localizer_settings()
 
     # ------------------------------------------------------------------
     # Messages and lifecycle
     # ------------------------------------------------------------------
     def msg_receiver(self, sender: str, payload) -> None:
-        self._menu_tree = payload[1]
-        self.load_settings()
+        action = None
+        if isinstance(payload, (tuple, list)) and len(payload) > 1:
+            action, menu_tree = payload[0], payload[1]
+        else:
+            menu_tree = self._menu_tree
+        if menu_tree is not None:
+            self._menu_tree = menu_tree
+            self.load_settings()
+        if action == "autofocus":
+            self._trigger_focus()
 
     def on_enter(self, last_id: str | None) -> None:
         self._config.camera.path.mkdir(parents=True, exist_ok=True)
@@ -655,6 +707,14 @@ class CameraControlledEnd(ControlledEnd):
             }.get(self._state.capture_mode, "SGL")
             mode_role = "success"
         items: list[str | tuple[str, str]] = [(mode, mode_role)]
+        focus_code = {0: "MF", 1: "AF-S", 2: "AF-C"}.get(
+            self._state.focus_mode, "AF"
+        )
+        items.append(
+            (focus_code, "warning" if self._state.focus_mode == 0 else "success")
+        )
+        if self._state.focus_mode == 0:
+            items.append((f"L{int(self._state.focus_position)}", "dim"))
         if metadata.get("ExposureTime") is not None:
             items.append(
                 (self._format_shutter(metadata["ExposureTime"]), "text")

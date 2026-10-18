@@ -54,6 +54,9 @@ class FakePicamera2:
             "Contrast": None,
             "Sharpness": None,
             "AfMode": None,
+            "AfTrigger": None,
+            "AfSpeed": None,
+            "AfRange": None,
             "LensPosition": None,
             "HdrMode": None,
             "ScalerCrop": None,
@@ -216,6 +219,8 @@ def test_new_pro_controls(monkeypatch):
     camera.set_exposure_value(1.5)
     camera.set_image_controls(saturation=1.2, contrast=0.9, sharpness=1.4)
     camera.set_focus(True, 500)
+    camera.set_af_speed(1)
+    camera.set_af_range(2)
     camera.set_ae_lock(True)
     camera.set_awb_lock(True)
 
@@ -229,11 +234,40 @@ def test_new_pro_controls(monkeypatch):
     assert applied["Sharpness"] == 1.4
     assert applied["AfMode"] == 0
     assert applied["LensPosition"] == 5.0
+    assert applied["AfSpeed"] == 1
+    assert applied["AfRange"] == 2
     assert applied["AeEnable"] is False
     assert applied["ExposureTime"] == 1000
     assert applied["AnalogueGain"] == 1.0
     assert applied["AwbEnable"] is False
     assert applied["ColourGains"] == (1.8, 1.5)
+
+
+def test_focus_modes_and_trigger(monkeypatch):
+    _install_fake_picamera2(monkeypatch)
+    monkeypatch.setattr("chandelier.hardware.camera.time.sleep", lambda _: None)
+    config = load_config()
+    camera = CameraDevice(config.camera, config.screen)
+
+    camera.set_focus_mode(1, 500)
+    applied = {}
+    for controls in camera._cam.controls:
+        applied.update(controls)
+    assert applied["AfMode"] == 1
+    assert applied["AfTrigger"] == 0
+
+    camera.trigger_autofocus()
+    assert camera._cam.controls[-1]["AfTrigger"] == 0
+
+    camera.set_focus_mode(0, 250)
+    applied = {}
+    for controls in camera._cam.controls:
+        applied.update(controls)
+    assert applied["AfMode"] == 0
+    assert applied["LensPosition"] == 2.5
+
+    camera.set_focus_mode(2, 250)
+    assert camera._cam.controls[-1]["AfMode"] == 2
 
 
 def test_unsupported_and_rejected_controls_are_skipped(monkeypatch):

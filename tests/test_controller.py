@@ -186,6 +186,7 @@ def test_render_loop_switches_and_shuts_down():
     controller.request_stop()
     thread.join(timeout=2)
     assert not thread.is_alive()
+    assert display.cleared is True
     assert display.backlight_state is False
 
 
@@ -237,6 +238,43 @@ def test_controller_accepts_menu_reboot_message(monkeypatch):
     controller = Controller.__new__(Controller)
     controller._handle_controller_message(("restart", {}))
     assert calls == ["reboot"]
+
+
+def test_controller_accepts_power_option_messages(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        Controller, "_reboot", staticmethod(lambda: calls.append("reboot"))
+    )
+    monkeypatch.setattr(
+        Controller,
+        "_shutdown",
+        staticmethod(lambda: calls.append("shutdown")),
+    )
+    controller = Controller.__new__(Controller)
+
+    controller._handle_controller_message(
+        {"id": "power", "value": {"content": "Reboot", "value": "reboot"}}
+    )
+    controller._handle_controller_message(
+        {"id": "power", "value": {"content": "Shutdown", "value": "shutdown"}}
+    )
+    assert calls == ["reboot", "shutdown"]
+
+
+def test_shutdown_prefers_passwordless_sudo(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr("chandelier.controller.subprocess.run", fake_run)
+    Controller._shutdown()
+    assert calls == [["sudo", "-n", "poweroff"]]
 
 
 def test_reboot_prefers_passwordless_sudo(monkeypatch):

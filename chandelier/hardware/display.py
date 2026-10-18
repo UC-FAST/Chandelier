@@ -122,9 +122,15 @@ class St7735Display:
         self._set_window(0, 0, self.width - 1, self.height - 1)
         self._data_bytes(payload)
 
-    def clear(self) -> None:
+    def clear(self, color: int = 0x0000) -> None:
+        """Fill the panel with ``color`` (RGB565, default black)."""
+
+        high = (int(color) >> 8) & 0xFF
+        low = int(color) & 0xFF
         self._set_window(0, 0, self.width - 1, self.height - 1)
-        self._data_bytes(bytes([0xFF]) * (self.width * self.height * 2))
+        self._data_bytes(
+            bytes((high, low)) * (self.width * self.height)
+        )
 
     def close(self) -> None:
         if self._closed:

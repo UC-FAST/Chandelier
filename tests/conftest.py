@@ -13,10 +13,13 @@ if str(PROJECT_ROOT) not in sys.path:
 @pytest.fixture(autouse=True)
 def reset_ui_language():
     from chandelier.i18n import translator
+    from chandelier.ui.themes import DEFAULT_THEME_ID, set_active_theme
 
     translator.set_language("en")
+    set_active_theme(DEFAULT_THEME_ID)
     yield
     translator.set_language("en")
+    set_active_theme(DEFAULT_THEME_ID)
 
 
 @pytest.fixture

@@ -55,6 +55,7 @@ class CameraDevice:
         self._digital_zoom = 1.0
         self._brightness = 0.0
         self._controls: dict = {}
+        self._unsupported_controls: set[str] = set()
         self._focus_mode: int | None = None
         self._metadata: dict | None = None
         self._frame = np.zeros(
@@ -124,13 +125,17 @@ class CameraDevice:
                 and self._controls[name] == value
             ):
                 continue
+            if name in self._unsupported_controls:
+                continue
             if not self._control_supported(name):
                 logger.warning("camera control %s is not supported", name)
+                self._unsupported_controls.add(name)
                 continue
             try:
                 self._cam.set_controls({name: value})
             except Exception as exc:  # libcamera raises RuntimeError variants
                 logger.warning("camera control %s failed: %s", name, exc)
+                self._unsupported_controls.add(name)
                 continue
             if name not in self._VOLATILE_CONTROLS:
                 self._controls[name] = value
@@ -233,15 +238,48 @@ class CameraDevice:
             controls["ColourGains"] = tuple(gains)
         self._set_controls(controls)
 
-    def set_focus(self, manual: bool, position: int) -> None:
-        if manual:
-            # LensPosition is in dioptres; the menu uses 0..1000.
-            lens_position = max(0.0, min(10.0, float(position) / 100.0))
+    @staticmethod
+    def _lens_position(position: float) -> float:
+        # LensPosition is in dioptres; the menu uses 0..1000.
+        return max(0.0, min(10.0, float(position) / 100.0))
+
+    def set_focus_mode(self, mode: int, position: float = 500) -> None:
+        """Select ``0=manual``, ``1=single AF`` or ``2=continuous AF``."""
+
+        mode = 0 if int(mode) <= 0 else 1 if int(mode) == 1 else 2
+        changed = mode != self._focus_mode
+        self._focus_mode = mode
+        if mode == 0:
             self._set_controls(
-                {"AfMode": 0, "LensPosition": lens_position}
+                {
+                    "AfMode": 0,
+                    "LensPosition": self._lens_position(position),
+                }
             )
+        elif mode == 1:
+            self._set_controls({"AfMode": 1})
+            if changed:
+                self.trigger_autofocus()
         else:
             self._set_controls({"AfMode": 2})
+
+    def set_focus(self, manual: bool, position: int) -> None:
+        self.set_focus_mode(0 if manual else 2, position)
+
+    def set_focus_position(self, position: float) -> None:
+        self._set_controls(
+            {"LensPosition": self._lens_position(position)}
+        )
+
+    def set_af_speed(self, speed: int) -> None:
+        self._set_controls({"AfSpeed": int(speed)})
+
+    def set_af_range(self, af_range: int) -> None:
+        self._set_controls({"AfRange": int(af_range)})
+
+    def trigger_autofocus(self) -> None:
+        # AfTrigger is a one-shot command; force it even if it was already 0.
+        self._set_controls({"AfTrigger": 0}, force=True)
 
     # ------------------------------------------------------------------
     # Preview
@@ -404,6 +442,8 @@ class CameraDevice:
             self._cam.configure(video_config)
             self._cam.set_controls(self._controls)
             self._apply_zoom()
+            if self._focus_mode == 1:
+                self.trigger_autofocus()
             self._cam.start_recording(
                 self._encoder, FfmpegOutput(file_path)
             )
@@ -417,6 +457,8 @@ class CameraDevice:
             self._refresh_base_crop()
             self._apply_zoom()
             self._cam.set_controls(self._controls)
+            if self._focus_mode == 1:
+                self.trigger_autofocus()
         logger.info("recording stopped")
 
     def _restore_preview(self) -> None:
@@ -424,6 +466,8 @@ class CameraDevice:
         self._cam.set_controls(self._controls)
         self._refresh_base_crop()
         self._apply_zoom()
+        if self._focus_mode == 1:
+            self.trigger_autofocus()
 
     # ------------------------------------------------------------------
     # Lifecycle

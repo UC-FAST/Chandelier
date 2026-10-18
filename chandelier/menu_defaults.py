@@ -15,6 +15,10 @@ THEME_CHOICES = [
     {"content": "High Contrast", "value": "high_contrast"},
     {"content": "Industrial", "value": "industrial"},
     {"content": "Classic", "value": "classic"},
+    {"content": "Windows XP", "value": "xp_luna"},
+    {"content": "Windows 2000", "value": "win2000"},
+    {"content": "Windows 7", "value": "win7"},
+    {"content": "Windows 10", "value": "win10"},
 ]
 
 DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
@@ -152,25 +156,6 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "value": False,
                 },
                 {
-                    "id": "manual_focus",
-                    "content": "Manual Focus",
-                    "type": "bool",
-                    "icon": "focus",
-                    "value": False,
-                    "set_enable": ["focus_position"],
-                },
-                {
-                    "id": "focus_position",
-                    "content": "Focus Pos",
-                    "type": "numeral",
-                    "icon": "focus",
-                    "value": 500,
-                    "min": 0,
-                    "max": 1000,
-                    "step": 10,
-                    "enable": False,
-                },
-                {
                     "id": "saturation",
                     "content": "Saturation",
                     "type": "numeral",
@@ -199,6 +184,76 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "min": 0.0,
                     "max": 4.0,
                     "step": 0.1,
+                },
+            ],
+        },
+        "focus": {
+            "title": "Focus",
+            "options": [
+                {
+                    "id": "af_mode",
+                    "content": "AF Mode",
+                    "type": "option",
+                    "icon": "focus",
+                    "value": {"content": "Continuous AF", "value": 2},
+                    "options": [
+                        {"content": "Continuous AF", "value": 2},
+                        {"content": "Single AF", "value": 1},
+                        {"content": "Manual", "value": 0},
+                    ],
+                },
+                {
+                    "id": "af_trigger",
+                    "content": "AF Trigger",
+                    "type": "msg",
+                    "icon": "focus",
+                    "badge": "AF",
+                    "receiver": "camera",
+                    "value": "autofocus",
+                },
+                {
+                    "id": "focus_position",
+                    "content": "Focus Pos",
+                    "type": "numeral",
+                    "icon": "focus",
+                    "value": 500,
+                    "min": 0,
+                    "max": 1000,
+                    "step": 10,
+                    "step_options": [1, 10, 50],
+                    "format": "lens",
+                    "enable": False,
+                    "enable_if": {"id": "af_mode", "value": 0},
+                },
+                {
+                    "id": "af_speed",
+                    "content": "AF Speed",
+                    "type": "option",
+                    "icon": "focus",
+                    "value": {"content": "Normal", "value": 0},
+                    "options": [
+                        {"content": "Normal", "value": 0},
+                        {"content": "Fast", "value": 1},
+                    ],
+                },
+                {
+                    "id": "af_range",
+                    "content": "AF Range",
+                    "type": "option",
+                    "icon": "focus",
+                    "value": {"content": "Normal", "value": 0},
+                    "options": [
+                        {"content": "Normal", "value": 0},
+                        {"content": "Macro", "value": 1},
+                        {"content": "Full", "value": 2},
+                    ],
+                },
+                {
+                    "id": "mf_assist",
+                    "content": "MF Assist",
+                    "type": "bool",
+                    "icon": "focus",
+                    "value": False,
                 },
             ],
         },
@@ -327,13 +382,16 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "options": copy.deepcopy(THEME_CHOICES),
                 },
                 {
-                    "id": "reboot",
-                    "content": "Reboot System",
-                    "type": "msg",
+                    "id": "power",
+                    "content": "Power Action",
+                    "type": "option",
                     "icon": "power",
-                    "badge": "REBOOT",
                     "receiver": "controller",
-                    "value": "restart",
+                    "value": {"content": "Reboot", "value": "reboot"},
+                    "options": [
+                        {"content": "Reboot", "value": "reboot"},
+                        {"content": "Shutdown", "value": "shutdown"},
+                    ],
                 },
             ],
         },
@@ -387,6 +445,7 @@ MOVED_LINKS: dict[str, dict[str, dict[str, str]]] = {
 MOVED_OPTIONS: dict[str, dict[str, dict[str, str]]] = {
     "camera": {
         "theme": {"from": "display", "to": "system"},
+        "focus_position": {"from": "manual", "to": "focus"},
     },
 }
 
@@ -428,7 +487,14 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
             "constraint_mode",
             "flicker",
         ],
-        "focus": ["mf_assist"],
+        "focus": [
+            "af_mode",
+            "af_trigger",
+            "focus_position",
+            "af_speed",
+            "af_range",
+            "mf_assist",
+        ],
         "white_balance": ["awb", "awb_mode", "color_gains"],
         "color_gains": ["red_gain", "blue_gain"],
         "flicker_menu": ["flicker_mode", "flicker_period"],
@@ -450,8 +516,6 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
             "exp_compensation",
             "ae_lock",
             "awb_lock",
-            "manual_focus",
-            "focus_position",
             "saturation",
             "contrast",
             "sharpness",
@@ -466,7 +530,7 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
             "loc_delay_max",
             "loc_delay_bins",
         ],
-        "system": ["language", "theme", "reboot"],
+        "system": ["language", "theme", "power"],
     },
     "gallery": {
         "0": ["player", "show_hist", "delete"],
@@ -561,6 +625,128 @@ def _append_missing_options(
     return changed
 
 
+def _migrate_focus_mode(tree: dict[str, Any]) -> bool:
+    """Convert the legacy ``manual_focus`` bool into the new ``af_mode``."""
+
+    group = tree.get("camera")
+    if not isinstance(group, dict):
+        return False
+    manual = group.get("manual")
+    if not isinstance(manual, dict):
+        return False
+    options = manual.get("options")
+    if not isinstance(options, list):
+        return False
+
+    legacy = None
+    kept = []
+    for option in options:
+        if isinstance(option, dict) and option.get("id") == "manual_focus":
+            legacy = option
+        else:
+            kept.append(option)
+    if legacy is None:
+        return False
+    manual["options"] = kept
+
+    focus = group.get("focus")
+    if not isinstance(focus, dict):
+        focus = copy.deepcopy(DEFAULT_SECTIONS["camera"]["focus"])
+        group["focus"] = focus
+
+    focus_options = focus.setdefault("options", [])
+    af_mode = next(
+        (
+            option
+            for option in focus_options
+            if isinstance(option, dict) and option.get("id") == "af_mode"
+        ),
+        None,
+    )
+    if af_mode is None:
+        default = next(
+            option
+            for option in DEFAULT_SECTIONS["camera"]["focus"]["options"]
+            if option["id"] == "af_mode"
+        )
+        af_mode = copy.deepcopy(default)
+        focus_options.append(af_mode)
+
+    if bool(legacy.get("value")):
+        manual_choice = next(
+            choice
+            for choice in af_mode.get("options", [])
+            if choice.get("value") == 0
+        )
+        af_mode["value"] = copy.deepcopy(manual_choice)
+    return True
+
+
+def _merge_option_defaults(
+    section: dict[str, Any], defaults: list[dict[str, Any]]
+) -> bool:
+    """Add newly introduced metadata to existing options by id."""
+
+    options = section.get("options")
+    if not isinstance(options, list):
+        return False
+    by_id = {
+        option.get("id"): option
+        for option in options
+        if isinstance(option, dict) and isinstance(option.get("id"), str)
+    }
+    changed = False
+    for default in defaults:
+        option = by_id.get(default.get("id"))
+        if option is None:
+            continue
+        for key, value in default.items():
+            if key in {"value", "options"} or key in option:
+                continue
+            option[key] = copy.deepcopy(value)
+            changed = True
+    return changed
+
+
+def _migrate_power_option(tree: dict[str, Any]) -> bool:
+    """Replace the old reboot-only MSG item with a combined power option."""
+
+    group = tree.get("camera")
+    if not isinstance(group, dict):
+        return False
+    system = group.get("system")
+    if not isinstance(system, dict):
+        return False
+    options = system.get("options")
+    if not isinstance(options, list):
+        return False
+
+    changed = False
+    kept = []
+    has_power = False
+    for option in options:
+        if not isinstance(option, dict):
+            kept.append(option)
+            continue
+        if option.get("id") == "reboot":
+            changed = True
+            continue
+        if option.get("id") == "power":
+            has_power = True
+        kept.append(option)
+    system["options"] = kept
+
+    if not has_power:
+        default = next(
+            option
+            for option in DEFAULT_SECTIONS["camera"]["system"]["options"]
+            if option["id"] == "power"
+        )
+        kept.append(copy.deepcopy(default))
+        changed = True
+    return changed
+
+
 def _ensure_theme_choices(tree: dict[str, Any]) -> bool:
     """Add newly introduced theme choices without overwriting an old value."""
 
@@ -646,6 +832,26 @@ def ensure_menu_defaults(tree: dict[str, Any]) -> bool:
             if moved is None:
                 continue
             source["options"] = kept
+
+            # Give a moved option any new metadata (format, dependency,
+            # icon, ...) without touching the user's value.
+            destination_defaults = DEFAULT_SECTIONS.get(
+                group_name, {}
+            ).get(move["to"], {})
+            default_option = next(
+                (
+                    option
+                    for option in destination_defaults.get("options", [])
+                    if option.get("id") == option_id
+                ),
+                None,
+            )
+            if default_option is not None:
+                for key, default_value in default_option.items():
+                    if key == "value":
+                        continue
+                    moved.setdefault(key, copy.deepcopy(default_value))
+
             target = group.get(move["to"])
             if not isinstance(target, dict):
                 defaults = DEFAULT_SECTIONS.get(group_name, {}).get(
@@ -665,6 +871,9 @@ def ensure_menu_defaults(tree: dict[str, Any]) -> bool:
                 target_options.append(moved)
             changed = True
 
+    changed |= _migrate_focus_mode(tree)
+    changed |= _migrate_power_option(tree)
+
     for group_name, sections in DEFAULT_SECTIONS.items():
         group = tree.get(group_name)
         if not isinstance(group, dict):
@@ -675,8 +884,12 @@ def ensure_menu_defaults(tree: dict[str, Any]) -> bool:
                 group[section_name] = copy.deepcopy(default_section)
                 changed = True
             else:
+                default_options = default_section.get("options", [])
                 changed |= _append_missing_options(
-                    section, default_section.get("options", [])
+                    section, default_options
+                )
+                changed |= _merge_option_defaults(
+                    section, default_options
                 )
 
     for group_name, links_by_section in DEFAULT_LINKS.items():
