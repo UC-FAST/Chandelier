@@ -33,59 +33,129 @@ _INDEX_TEMPLATE = """<!doctype html>
 <html lang="{{LANG}}">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d1117">
 <title>Chandelier Preview</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; min-height: 100vh; display: flex; flex-direction: column;
-         align-items: center; justify-content: center; gap: 12px;
-         background: #111; color: #eee;
-         font-family: system-ui, sans-serif; }
-  h1 { margin: 0; font-size: 1.1rem; font-weight: 500; letter-spacing: .08em; }
-  .frame { padding: 4px; background: #222; border: 1px solid #444;
-           border-radius: 6px; }
-  img { display: block; width: min(90vw, 640px); height: auto;
-        image-rendering: pixelated; background: #000; }
-  p { margin: 0; font-size: .8rem; color: #888; }
-  a { color: #6cf; }
-  .controls { width: min(90vw, 640px); display: flex; flex-direction: column;
-              gap: 6px; }
-  .screens { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  .pad { display: grid; gap: 6px;
-         grid-template-areas: ". up ." "left ok right"
-                              "back down shot"; }
-  button { padding: 10px 6px; font: inherit; font-size: .85rem;
-           color: #eee; background: #263238; border: 1px solid #455a64;
-           border-radius: 6px; cursor: pointer; touch-action: manipulation; }
-  button:active { background: #455a64; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    min-height: 100vh; min-height: 100dvh;
+    background: radial-gradient(1200px 600px at 50% -10%,
+                #1b2430 0%, #0d1117 55%, #090c10 100%);
+    color: #e6edf3;
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+  .app {
+    min-height: 100vh; min-height: 100dvh;
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: flex-start; gap: 10px; padding: 10px;
+  }
+  .preview {
+    width: 100%; display: flex; flex-direction: column;
+    align-items: center; gap: 6px; flex: 0 0 auto;
+  }
+  .frame {
+    width: min(100%, 640px); padding: 4px;
+    background: linear-gradient(180deg, #1c2128, #11151c);
+    border: 1px solid #30363d; border-radius: 14px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .45);
+  }
+  img {
+    display: block; width: 100%; height: auto; aspect-ratio: 4 / 3;
+    object-fit: contain; image-rendering: pixelated;
+    background: #000; border-radius: 10px;
+  }
+  .meta { margin: 0; font-size: .78rem; color: #8b949e; text-align: center; }
+  .meta a { color: #58a6ff; text-decoration: none; }
+  .controls {
+    width: 100%; max-width: 640px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .screens { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  .screens button {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 4px; padding: 10px 4px;
+    font-size: .75rem;
+  }
+  .pad {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px;
+    grid-template-areas: ". up ." "left ok right" "back down shot";
+  }
+  button {
+    font: inherit; color: #e6edf3;
+    background: linear-gradient(180deg, #21262d, #161b22);
+    border: 1px solid #30363d; border-radius: 14px;
+    cursor: pointer; touch-action: manipulation; user-select: none;
+    min-height: 52px;
+    transition: transform .06s ease, background .15s ease,
+                border-color .15s ease;
+  }
+  button:hover { border-color: #4a5561; }
+  button:active { transform: scale(.96); background: #30363d; }
+  button:focus-visible { outline: 2px solid #58a6ff; outline-offset: 2px; }
+  .icon { width: 22px; height: 22px; fill: currentColor; }
+  .dpad .icon { width: 30px; height: 30px; }
+  .up .icon { transform: rotate(0deg); }
+  .right .icon { transform: rotate(90deg); }
+  .down .icon { transform: rotate(180deg); }
+  .left .icon { transform: rotate(-90deg); }
+  .ok {
+    font-weight: 700; letter-spacing: .04em; color: #fff;
+    background: linear-gradient(180deg, #1f6feb, #1158c7);
+    border-color: #388bfd;
+  }
+  .back, .shot {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 2px; font-size: .8rem;
+  }
   .up { grid-area: up; } .down { grid-area: down; }
   .left { grid-area: left; } .right { grid-area: right; }
   .ok { grid-area: ok; } .back { grid-area: back; }
   .shot { grid-area: shot; }
+  @media (orientation: landscape) {
+    .app { padding: 6px; gap: 6px; }
+    .frame { width: min(100%, 640px, calc(46dvh * 4 / 3)); }
+    .controls {
+      flex-direction: row; align-items: stretch;
+      max-width: min(100%, 760px); gap: 10px;
+    }
+    .screens { grid-template-columns: repeat(2, 1fr); flex: 1 1 0; }
+    .pad { flex: 1 1 0; }
+    button { min-height: 44px; }
+    .screens button { padding: 6px 4px; }
+    .dpad .icon { width: 24px; height: 24px; }
+  }
 </style>
 </head>
 <body>
-<h1>CHANDELIER &middot; LIVE</h1>
-<div class="frame"><img id="live" alt="{{LIVE_PREVIEW}}"></div>
-<div class="controls">
-  <div class="screens">
-    <button data-screen="camera">{{CAMERA}}</button>
-    <button data-screen="gallery">{{GALLERY}}</button>
-    <button data-screen="menu">{{MENU}}</button>
-    <button data-screen="system_monitor">{{SYSTEM}}</button>
-  </div>
-  <div class="pad">
-    <button class="up" data-action="up">{{UP}}</button>
-    <button class="left" data-action="left">{{LEFT}}</button>
-    <button class="ok" data-action="center">{{OK}}</button>
-    <button class="right" data-action="right">{{RIGHT}}</button>
-    <button class="back" data-action="cross">{{BACK}}</button>
-    <button class="down" data-action="down">{{DOWN}}</button>
-    <button class="shot" data-action="shutter">{{SHOT}}</button>
-  </div>
-</div>
-<p><span id="status">{{CONNECTING}}</span> &middot; 320 &times; 240 &middot;
-   <a href="/snapshot.jpg">{{SNAPSHOT}}</a></p>
+<main class="app">
+  <section class="preview">
+    <div class="frame"><img id="live" alt="{{LIVE_PREVIEW}}" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7"></div>
+    <p class="meta"><span id="status">{{CONNECTING}}</span> &middot;
+       320 &times; 240 &middot; <a href="/snapshot.jpg">{{SNAPSHOT}}</a></p>
+  </section>
+  <section class="controls" aria-label="Controls">
+    <nav class="screens">
+      <button data-screen="camera" aria-label="{{CAMERA}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l1.5-2h3L15 5h4a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h4zm3 4.5a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9zm0 2a2.5 2.5 0 1 1 0 5 2.5 2.5 0 0 1 0-5z"/></svg>{{CAMERA}}</button>
+      <button data-screen="gallery" aria-label="{{GALLERY}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zm1 2v10h14V7H5zm2 8l3-4 2.5 3 2-2.5L18 15H7z"/><circle cx="8.5" cy="9.5" r="1.3"/></svg>{{GALLERY}}</button>
+      <button data-screen="menu" aria-label="{{MENU}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v2H4zm0 5h16v2H4zm0 5h16v2H4z"/></svg>{{MENU}}</button>
+      <button data-screen="system_monitor" aria-label="{{SYSTEM}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 4h18a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1h-7v2h3v2H7v-2h3v-2H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm1 2v9h16V6H4z"/></svg>{{SYSTEM}}</button>
+    </nav>
+    <div class="pad">
+      <button class="dpad up" data-action="up" aria-label="{{UP}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l-7 8h4v8h6v-8h4z"/></svg></button>
+      <button class="dpad left" data-action="left" aria-label="{{LEFT}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l-7 8h4v8h6v-8h4z"/></svg></button>
+      <button class="ok" data-action="center" aria-label="{{OK}}">{{OK}}</button>
+      <button class="dpad right" data-action="right" aria-label="{{RIGHT}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l-7 8h4v8h6v-8h4z"/></svg></button>
+      <button class="back" data-action="cross" aria-label="{{BACK}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M10 5l-7 7 7 7v-4h5a4 4 0 0 1 4 4h2a6 6 0 0 0-6-6h-5z"/></svg>{{BACK}}</button>
+      <button class="dpad down" data-action="down" aria-label="{{DOWN}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l-7 8h4v8h6v-8h4z"/></svg></button>
+      <button class="shot" data-action="shutter" aria-label="{{SHOT}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="4"/></svg>{{SHOT}}</button>
+    </div>
+  </section>
+</main>
 <script>
 const post = (path, body) => fetch(path, {
   method: 'POST',
