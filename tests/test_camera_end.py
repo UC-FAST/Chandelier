@@ -67,6 +67,21 @@ def test_localizer_menu_settings_are_forwarded():
     assert localizer.updates[-1]["marker_azimuth_offset"] == pytest.approx(
         initial_value("loc_marker_azimuth")
     )
+    assert localizer.updates[-1]["marker_elevation_offset"] == pytest.approx(
+        initial_value("loc_marker_elevation")
+    )
+    assert localizer.updates[-1]["marker_x_gain"] == initial_value(
+        "loc_marker_x_gain"
+    )
+    assert localizer.updates[-1]["marker_y_gain"] == initial_value(
+        "loc_marker_y_gain"
+    )
+    assert localizer.updates[-1]["marker_mic_offset_x"] == pytest.approx(
+        initial_value("loc_marker_mic_x") * 0.01
+    )
+    assert localizer.updates[-1]["marker_source_distance"] == pytest.approx(
+        initial_value("loc_talk_distance") * 0.01
+    )
 
     for section in tree.values():
         for option in section.get("options", []):
@@ -80,6 +95,20 @@ def test_localizer_menu_settings_are_forwarded():
                 option["value"] = 70
             elif option.get("id") == "loc_marker_azimuth":
                 option["value"] = 15
+            elif option.get("id") == "loc_marker_elevation":
+                option["value"] = -18.0
+            elif option.get("id") == "loc_marker_x_gain":
+                option["value"] = 0.5
+            elif option.get("id") == "loc_marker_y_gain":
+                option["value"] = 2.5
+            elif option.get("id") == "loc_marker_mic_x":
+                option["value"] = 3.0
+            elif option.get("id") == "loc_marker_mic_y":
+                option["value"] = -5.0
+            elif option.get("id") == "loc_marker_mic_z":
+                option["value"] = 1.0
+            elif option.get("id") == "loc_talk_distance":
+                option["value"] = 40.0
 
     end.load_settings()
     update = localizer.updates[-1]
@@ -88,6 +117,58 @@ def test_localizer_menu_settings_are_forwarded():
     assert update["confidence_threshold"] == 0.2
     assert update["marker_fov"] == pytest.approx(70.0)
     assert update["marker_azimuth_offset"] == pytest.approx(15.0)
+    assert update["marker_elevation_offset"] == pytest.approx(-18.0)
+    assert update["marker_x_gain"] == pytest.approx(0.5)
+    assert update["marker_y_gain"] == pytest.approx(2.5)
+    assert update["marker_mic_offset_x"] == pytest.approx(0.03)
+    assert update["marker_mic_offset_y"] == pytest.approx(-0.05)
+    assert update["marker_mic_offset_z"] == pytest.approx(0.01)
+    assert update["marker_source_distance"] == pytest.approx(0.4)
+
+
+def test_focus_distance_is_forwarded_to_the_localizer():
+    class FakeLocalizer:
+        def __init__(self):
+            self.updates = []
+
+        def update_settings(self, **values):
+            self.updates.append(values)
+            return True
+
+    localizer = FakeLocalizer()
+    end, camera, tree = _make_end(localizer=localizer)
+    for section in tree.values():
+        for option in section.get("options", []):
+            if option.get("id") == "loc_talk_distance":
+                option["value"] = 0.0
+    camera.metadata["LensPosition"] = 2.5  # 1 / 2.5 dpt = 0.4 m
+    end._focus_distance = None
+    end._sync_source_distance()
+    assert localizer.updates[-1]["marker_source_distance"] == pytest.approx(
+        0.4
+    )
+
+
+def test_manual_talk_distance_disables_focus_estimate():
+    class FakeLocalizer:
+        def __init__(self):
+            self.updates = []
+
+        def update_settings(self, **values):
+            self.updates.append(values)
+            return True
+
+    localizer = FakeLocalizer()
+    end, camera, tree = _make_end(localizer=localizer)
+    for section in tree.values():
+        for option in section.get("options", []):
+            if option.get("id") == "loc_talk_distance":
+                option["value"] = 40.0
+    camera.metadata["LensPosition"] = 2.5
+    end._focus_distance = None
+    count = len(localizer.updates)
+    end._sync_source_distance()
+    assert len(localizer.updates) == count
 
 
 def test_web_server_menu_setting_is_forwarded():

@@ -13,7 +13,10 @@ import os
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from chandelier.common.geometry import aziel_to_screen_spherical
+from chandelier.common.geometry import (
+    apply_screen_gain,
+    aziel_to_screen_spherical,
+)
 from chandelier.config import LocalizerConfig
 
 MAX_SOURCES = 8
@@ -28,6 +31,13 @@ _FIELD_ORDER = (
     "n_delay_bins",
     "marker_fov",
     "marker_azimuth_offset",
+    "marker_elevation_offset",
+    "marker_x_gain",
+    "marker_y_gain",
+    "marker_mic_offset_x",
+    "marker_mic_offset_y",
+    "marker_mic_offset_z",
+    "marker_source_distance",
 )
 _INTEGER_FIELDS = frozenset({"n_sources", "max_to_cumulate", "n_delay_bins"})
 _LIMITS = {
@@ -38,6 +48,13 @@ _LIMITS = {
     "delay_max": (0.0, 64.0),
     "n_delay_bins": (2.0, 512.0),
     "marker_fov": (1.0, 179.0),
+    "marker_elevation_offset": (-90.0, 90.0),
+    "marker_x_gain": (0.0, 3.0),
+    "marker_y_gain": (0.0, 3.0),
+    "marker_mic_offset_x": (-10.0, 10.0),
+    "marker_mic_offset_y": (-10.0, 10.0),
+    "marker_mic_offset_z": (-10.0, 10.0),
+    "marker_source_distance": (0.0, 100.0),
 }
 
 
@@ -56,8 +73,15 @@ class LocalizerSettings:
     mic_rotation: float = 0.0
     delay_max: float = 0.0
     n_delay_bins: int = 50
-    marker_fov: float = 62.0
+    marker_fov: float = 83.0
     marker_azimuth_offset: float = 0.0
+    marker_elevation_offset: float = 0.0
+    marker_x_gain: float = 0.0
+    marker_y_gain: float = 0.0
+    marker_mic_offset_x: float = 0.0
+    marker_mic_offset_y: float = 0.0
+    marker_mic_offset_z: float = 0.0
+    marker_source_distance: float = 0.0
 
     @classmethod
     def from_config(cls, config: LocalizerConfig) -> "LocalizerSettings":
@@ -71,6 +95,13 @@ class LocalizerSettings:
             n_delay_bins=config.n_delay_bins,
             marker_fov=config.marker_fov,
             marker_azimuth_offset=config.marker_azimuth_offset,
+            marker_elevation_offset=config.marker_elevation_offset,
+            marker_x_gain=config.marker_x_gain,
+            marker_y_gain=config.marker_y_gain,
+            marker_mic_offset_x=config.marker_mic_offset_x,
+            marker_mic_offset_y=config.marker_mic_offset_y,
+            marker_mic_offset_z=config.marker_mic_offset_z,
+            marker_source_distance=config.marker_source_distance,
         )
 
 
@@ -298,6 +329,39 @@ def run_worker(
                 if current is not None
                 else config.marker_azimuth_offset
             )
+            marker_elevation_offset = (
+                current.marker_elevation_offset
+                if current is not None
+                else config.marker_elevation_offset
+            )
+            mic_offset = (
+                (
+                    current.marker_mic_offset_x,
+                    current.marker_mic_offset_y,
+                    current.marker_mic_offset_z,
+                )
+                if current is not None
+                else (
+                    config.marker_mic_offset_x,
+                    config.marker_mic_offset_y,
+                    config.marker_mic_offset_z,
+                )
+            )
+            source_distance = (
+                current.marker_source_distance
+                if current is not None
+                else config.marker_source_distance
+            )
+            x_gain = (
+                current.marker_x_gain
+                if current is not None
+                else config.marker_x_gain
+            )
+            y_gain = (
+                current.marker_y_gain
+                if current is not None
+                else config.marker_y_gain
+            )
             sources = []
             for rank, detection in enumerate(batch.detections[:MAX_SOURCES]):
                 screen_x, screen_y = aziel_to_screen_spherical(
@@ -307,6 +371,17 @@ def run_worker(
                     height=screen_size[1],
                     fov=marker_fov,
                     azimuth_offset=marker_azimuth_offset,
+                    elevation_offset=marker_elevation_offset,
+                    mic_offset=mic_offset,
+                    source_distance=source_distance,
+                )
+                screen_x, screen_y = apply_screen_gain(
+                    screen_x,
+                    screen_y,
+                    width=screen_size[0],
+                    height=screen_size[1],
+                    gain_x=x_gain,
+                    gain_y=y_gain,
                 )
                 sources.append(
                     SourceSnapshot(

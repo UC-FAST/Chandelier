@@ -98,6 +98,13 @@ def test_marker_projection_settings_are_parsed(config_file, tmp_path):
     raw = json.loads(config_file.read_text(encoding="utf-8"))
     raw["localizer"]["marker_fov"] = 70.5
     raw["localizer"]["marker_azimuth_offset"] = 370
+    raw["localizer"]["marker_elevation_offset"] = -18.0
+    raw["localizer"]["marker_x_gain"] = 0.5
+    raw["localizer"]["marker_y_gain"] = 2.5
+    raw["localizer"]["marker_mic_offset_x"] = 0.03
+    raw["localizer"]["marker_mic_offset_y"] = -0.05
+    raw["localizer"]["marker_mic_offset_z"] = 0.01
+    raw["localizer"]["marker_source_distance"] = 0.45
     target = tmp_path / "projection.json"
     target.write_text(json.dumps(raw), encoding="utf-8")
     clear_config_cache()
@@ -105,6 +112,24 @@ def test_marker_projection_settings_are_parsed(config_file, tmp_path):
     config = load_config(target)
     assert config.localizer.marker_fov == pytest.approx(70.5)
     assert config.localizer.marker_azimuth_offset == pytest.approx(10.0)
+    assert config.localizer.marker_elevation_offset == pytest.approx(-18.0)
+    assert config.localizer.marker_x_gain == pytest.approx(0.5)
+    assert config.localizer.marker_y_gain == pytest.approx(2.5)
+    assert config.localizer.marker_mic_offset_x == pytest.approx(0.03)
+    assert config.localizer.marker_mic_offset_y == pytest.approx(-0.05)
+    assert config.localizer.marker_mic_offset_z == pytest.approx(0.01)
+    assert config.localizer.marker_source_distance == pytest.approx(0.45)
+
+
+def test_negative_source_distance_is_rejected(config_file, tmp_path):
+    raw = json.loads(config_file.read_text(encoding="utf-8"))
+    raw["localizer"]["marker_source_distance"] = -0.1
+    bad = tmp_path / "bad_distance.json"
+    bad.write_text(json.dumps(raw), encoding="utf-8")
+    clear_config_cache()
+
+    with pytest.raises(ConfigError, match="marker_source_distance"):
+        load_config(bad)
 
 
 def test_shipped_menu_config_is_valid():
@@ -278,6 +303,13 @@ def test_ensure_menu_defaults_adds_localizer_section():
         "loc_mic_rotation",
         "loc_marker_fov",
         "loc_marker_azimuth",
+        "loc_marker_elevation",
+        "loc_marker_x_gain",
+        "loc_marker_y_gain",
+        "loc_marker_mic_x",
+        "loc_marker_mic_y",
+        "loc_marker_mic_z",
+        "loc_talk_distance",
         "loc_speech_threshold",
         "loc_max_chunks",
         "loc_delay_max",

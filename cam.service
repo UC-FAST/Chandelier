@@ -15,7 +15,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=HOME=/home/pi
 # The pi user's own group membership provides video/gpio/spi/i2c access.
 Restart=always
-RestartSec=2
+RestartSec=5
 SyslogIdentifier=chandelier
 StandardOutput=journal
 StandardError=journal

@@ -45,6 +45,13 @@ _LOCALIZER_OPTIONS = (
     (MenuOptionId.LOC_DELAY_BINS.value, "n_delay_bins", int),
     (MenuOptionId.LOC_MARKER_FOV.value, "marker_fov", float),
     (MenuOptionId.LOC_MARKER_AZIMUTH.value, "marker_azimuth_offset", float),
+    (MenuOptionId.LOC_MARKER_ELEVATION.value, "marker_elevation_offset", float),
+    (MenuOptionId.LOC_MARKER_X_GAIN.value, "marker_x_gain", float),
+    (MenuOptionId.LOC_MARKER_Y_GAIN.value, "marker_y_gain", float),
+    (MenuOptionId.LOC_MARKER_MIC_X.value, "marker_mic_offset_x", float, 0.01),
+    (MenuOptionId.LOC_MARKER_MIC_Y.value, "marker_mic_offset_y", float, 0.01),
+    (MenuOptionId.LOC_MARKER_MIC_Z.value, "marker_mic_offset_z", float, 0.01),
+    (MenuOptionId.LOC_TALK_DISTANCE.value, "marker_source_distance", float, 0.01),
 )
 
 
@@ -119,6 +126,7 @@ class CameraControlledEnd(ControlledEnd):
         self._state = CameraState()
         self._menu_tree: dict | None = None
         self._localizer = localizer
+        self._focus_distance: float | None = None
         self._filter = SlidingWindowFilter(10)
         self._capture_session: CaptureSession | None = None
         self._mf_edges: np.ndarray | None = None
@@ -548,12 +556,12 @@ class CameraControlledEnd(ControlledEnd):
         if self._localizer is None:
             return
         values = {}
-        for option_id, field, cast in _LOCALIZER_OPTIONS:
+        for option_id, field, cast, *rest in _LOCALIZER_OPTIONS:
             raw = self._option_value_or(option_id, None)
             if raw is None:
                 continue
             try:
-                values[field] = cast(raw)
+                values[field] = cast(raw) * (rest[0] if rest else 1.0)
             except (TypeError, ValueError):
                 continue
         if values:
@@ -563,6 +571,56 @@ class CameraControlledEnd(ControlledEnd):
                 self._logger.exception(
                     "failed to apply localizer settings %s", values
                 )
+
+    def _sync_source_distance(self) -> None:
+        """Use the autofocus lens position as the source distance.
+
+        ``LensPosition`` is reported in dioptres, so the focused object is
+        ``1 / LensPosition`` metres away.  The camera is normally focused on
+        the person who is speaking, which is exactly the distance needed for
+        the array/camera parallax correction.  A positive "Talk Distance"
+        menu value overrides the estimate.
+        """
+
+        if self._localizer is None:
+            return
+        if self._state.focus_mode == 0:
+            # In manual focus LensPosition is a user setting, not a measurement
+            # of where the subject is.
+            return
+        manual = self._option_value_or(
+            MenuOptionId.LOC_TALK_DISTANCE.value, 0.0
+        )
+        try:
+            if manual is not None and float(manual) > 0.0:
+                return
+        except (TypeError, ValueError):
+            pass
+
+        lens_position = (self._camera.metadata or {}).get("LensPosition")
+        if not lens_position:
+            return
+        try:
+            distance = 1.0 / float(lens_position)
+        except (TypeError, ValueError, ZeroDivisionError):
+            return
+        if not 0.05 <= distance <= 20.0:
+            return
+
+        if self._focus_distance is None:
+            self._focus_distance = distance
+        else:
+            self._focus_distance = (
+                0.8 * self._focus_distance + 0.2 * distance
+            )
+        try:
+            self._localizer.update_settings(
+                marker_source_distance=self._focus_distance
+            )
+        except Exception:
+            self._logger.debug(
+                "failed to apply focus distance", exc_info=True
+            )
 
     def _read_overlay_settings(self) -> None:
         state = self._state
@@ -792,6 +850,10 @@ class CameraControlledEnd(ControlledEnd):
     def main_loop(self):
         for index, frame in enumerate(self._camera.preview()):
             now = time.monotonic()
+            # Refreshing the focus-derived distance at ~4 Hz is plenty; the
+            # lens itself moves much more slowly than the preview frame rate.
+            if index % 5 == 0:
+                self._sync_source_distance()
             session = self._capture_session
             if session is not None:
                 session.tick(now, self._capture_photo)

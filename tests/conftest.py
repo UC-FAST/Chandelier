@@ -65,7 +65,11 @@ def config_file(tmp_path: Path) -> Path:
                 "max_to_cumulate": 5, "speech_threshold": 0.0,
                 "silero_model_dir": null, "delay_max": 0.0,
                 "n_delay_bins": 50, "mic_rotation": 0.0,
-                "marker_fov": 62.0, "marker_azimuth_offset": 0.0
+                "marker_fov": 83.0, "marker_azimuth_offset": 0.0,
+                "marker_elevation_offset": 0.0,
+                "marker_x_gain": 0.0, "marker_y_gain": 0.0,
+                "marker_mic_offset_x": 0.0, "marker_mic_offset_y": 0.0,
+                "marker_mic_offset_z": 0.0, "marker_source_distance": 0.0
             },
             "marker": {
                 "mode": "single", "max_sources": 3, "ttl": 3.0,

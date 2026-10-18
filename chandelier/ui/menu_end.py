@@ -1383,6 +1383,17 @@ class MenuControlledEnd(ControlledEnd):
                 return f"{float(value):.0f}deg"
             except (TypeError, ValueError):
                 return str(value)
+        if fmt == "cm":
+            try:
+                return f"{float(value):g}cm"
+            except (TypeError, ValueError):
+                return str(value)
+        if fmt == "distance":
+            try:
+                distance = float(value)
+            except (TypeError, ValueError):
+                return str(value)
+            return "auto" if distance <= 0.0 else f"{distance:g}cm"
         if fmt == "lens":
             try:
                 return f"{float(value) / 100.0:.2f} dpt"

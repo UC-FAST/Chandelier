@@ -1,8 +1,8 @@
 """Sound-source localisation (DUET separation + SRP-PHAT DOA estimation).
 
-Heavy dependencies (torch, speechbrain, scipy, plotly) are imported lazily
-inside the functions that need them so that importing this package stays
-cheap and works on machines without the localisation extras installed.
+Heavy dependencies (torch, scipy, plotly) are imported lazily inside the
+functions that need them so that importing this package stays cheap and
+works on machines without the localisation extras installed.
 """
 
 from chandelier.localizer.bss import Duet

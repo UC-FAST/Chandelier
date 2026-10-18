@@ -93,8 +93,13 @@ def test_shared_localizer_settings_round_trip_and_clamp():
     )
     settings = SharedLocalizerSettings(config)
     assert settings.snapshot() == LocalizerSettings.from_config(config)
-    assert settings.snapshot().marker_fov == pytest.approx(62.0)
+    assert settings.snapshot().marker_fov == pytest.approx(83.0)
     assert settings.snapshot().marker_azimuth_offset == pytest.approx(0.0)
+    assert settings.snapshot().marker_elevation_offset == pytest.approx(0.0)
+    assert settings.snapshot().marker_x_gain == pytest.approx(0.0)
+    assert settings.snapshot().marker_y_gain == pytest.approx(0.0)
+    assert settings.snapshot().marker_mic_offset_x == pytest.approx(0.0)
+    assert settings.snapshot().marker_source_distance == pytest.approx(0.0)
 
     assert settings.update(
         n_sources=5,
@@ -102,6 +107,13 @@ def test_shared_localizer_settings_round_trip_and_clamp():
         mic_rotation=370.0,
         marker_fov=90.5,
         marker_azimuth_offset=370.0,
+        marker_elevation_offset=-18.0,
+        marker_x_gain=0.5,
+        marker_y_gain=2.5,
+        marker_mic_offset_x=0.03,
+        marker_mic_offset_y=-0.05,
+        marker_mic_offset_z=0.01,
+        marker_source_distance=0.45,
     )
     snapshot = settings.snapshot()
     assert snapshot.n_sources == 5
@@ -109,13 +121,32 @@ def test_shared_localizer_settings_round_trip_and_clamp():
     assert snapshot.mic_rotation == pytest.approx(10.0)
     assert snapshot.marker_fov == pytest.approx(90.5)
     assert snapshot.marker_azimuth_offset == pytest.approx(10.0)
+    assert snapshot.marker_elevation_offset == pytest.approx(-18.0)
+    assert snapshot.marker_x_gain == pytest.approx(0.5)
+    assert snapshot.marker_y_gain == pytest.approx(2.5)
+    assert snapshot.marker_mic_offset_x == pytest.approx(0.03)
+    assert snapshot.marker_mic_offset_y == pytest.approx(-0.05)
+    assert snapshot.marker_mic_offset_z == pytest.approx(0.01)
+    assert snapshot.marker_source_distance == pytest.approx(0.45)
 
     # Integer fields are rounded and every value is clamped to the menu range.
-    assert settings.update(n_sources=99, n_delay_bins=1, marker_fov=999)
+    assert settings.update(
+        n_sources=99,
+        n_delay_bins=1,
+        marker_fov=999,
+        marker_mic_offset_x=99.0,
+        marker_source_distance=-1.0,
+        marker_x_gain=99.0,
+        marker_y_gain=-99.0,
+    )
     snapshot = settings.snapshot()
     assert snapshot.n_sources == 8
     assert snapshot.n_delay_bins == 2
     assert snapshot.marker_fov == pytest.approx(179.0)
+    assert snapshot.marker_mic_offset_x == pytest.approx(10.0)
+    assert snapshot.marker_source_distance == pytest.approx(0.0)
+    assert snapshot.marker_x_gain == pytest.approx(3.0)
+    assert snapshot.marker_y_gain == pytest.approx(0.0)
 
     assert settings.update(marker_fov=0)
     assert settings.snapshot().marker_fov == pytest.approx(1.0)

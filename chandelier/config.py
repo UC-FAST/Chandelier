@@ -115,8 +115,19 @@ class LocalizerConfig:
     delay_max: float = 0.0
     n_delay_bins: int = 50
     mic_rotation: float = 0.0
-    marker_fov: float = 62.0
+    marker_fov: float = 83.0
     marker_azimuth_offset: float = 0.0
+    marker_elevation_offset: float = 0.0
+    # Integer screen-space gains; zero disables the correction.
+    marker_x_gain: float = 0.0
+    marker_y_gain: float = 0.0
+    # Array centre relative to the camera (x right, y up, z forward), metres.
+    marker_mic_offset_x: float = 0.0
+    marker_mic_offset_y: float = 0.0
+    marker_mic_offset_z: float = 0.0
+    # Distance from the camera to the sound source, metres.  Zero disables
+    # the parallax correction.
+    marker_source_distance: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -250,7 +261,7 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
 
     localizer_raw = raw.get("localizer", {})
     silero_dir = localizer_raw.get("silero_model_dir")
-    marker_fov = float(localizer_raw.get("marker_fov", 62.0))
+    marker_fov = float(localizer_raw.get("marker_fov", 83.0))
     if not 0.0 < marker_fov < 180.0:
         raise ConfigError(
             "localizer.marker_fov must be between 0 and 180 degrees, "
@@ -259,6 +270,23 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
     marker_azimuth_offset = float(
         localizer_raw.get("marker_azimuth_offset", 0.0)
     ) % 360.0
+    marker_elevation_offset = float(
+        localizer_raw.get("marker_elevation_offset", 0.0)
+    )
+    marker_x_gain = float(localizer_raw.get("marker_x_gain", 0.0))
+    marker_y_gain = float(localizer_raw.get("marker_y_gain", 0.0))
+    marker_mic_offset = tuple(
+        float(localizer_raw.get(f"marker_mic_offset_{axis}", 0.0))
+        for axis in ("x", "y", "z")
+    )
+    marker_source_distance = float(
+        localizer_raw.get("marker_source_distance", 0.0)
+    )
+    if marker_source_distance < 0.0:
+        raise ConfigError(
+            "localizer.marker_source_distance must not be negative, "
+            f"got {localizer_raw.get('marker_source_distance')!r}"
+        )
     localizer = LocalizerConfig(
         device=localizer_raw.get("device", 0),
         rate=int(localizer_raw.get("rate", 16000)),
@@ -279,6 +307,13 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
         mic_rotation=float(localizer_raw.get("mic_rotation", 0.0)),
         marker_fov=marker_fov,
         marker_azimuth_offset=marker_azimuth_offset,
+        marker_elevation_offset=marker_elevation_offset,
+        marker_x_gain=marker_x_gain,
+        marker_y_gain=marker_y_gain,
+        marker_mic_offset_x=marker_mic_offset[0],
+        marker_mic_offset_y=marker_mic_offset[1],
+        marker_mic_offset_z=marker_mic_offset[2],
+        marker_source_distance=marker_source_distance,
     )
 
     marker_raw = raw.get("marker", {})

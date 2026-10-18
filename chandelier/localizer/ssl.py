@@ -1,8 +1,111 @@
-"""Steered Response Power - PHAT direction-of-arrival estimation."""
+"""Steered Response Power direction-of-arrival estimation.
+
+The estimator steers a plane-wave model over a hemisphere of candidate
+directions and picks the direction whose predicted inter-microphone phases
+best match the observed cross-spectra.  Two details matter for accuracy with
+speech-band audio:
+
+* Frequency bins are weighted by their magnitude (generalised PHAT with
+  ``beta < 1``).  Classic PHAT (``beta = 1``) whitens every bin, including
+  bands that only contain microphone noise, and those noisy bins then pull
+  the estimate towards the array normal.
+* A coarse hemisphere search is followed by a local refinement.  The coarse
+  grid alone quantises the result to several degrees, which is very visible
+  when the direction is projected onto the camera image.
+
+The array is planar, so the front/back sign of the elevation is inherently
+ambiguous; the estimator reports the source in front of the array
+(``elevation`` in ``[0, 90]``).
+"""
 
 from __future__ import annotations
 
+import math
 from typing import Any
+
+_EPSILON = 1e-12
+_SPEED_OF_SOUND = 343.0
+
+# STFT resolution: 25 ms window, 10 ms hop (same as the previous estimator).
+_FRAME_SECONDS = 0.025
+_HOP_SECONDS = 0.010
+
+# Generalised PHAT exponent.  0 is plain SRP (magnitude-weighted cross
+# spectra), 1 is classic PHAT.  Measured on recorded speech-band material,
+# values around 0.3 keep the direct path dominant without amplifying noise.
+_BETA = 0.3
+
+_COARSE_POINTS = 2000
+_REFINE_RADIUS_DEG = 5.0
+_REFINE_STEP_DEG = 0.5
+
+
+def _fibonacci_hemisphere(count: int):
+    """Return ``count`` quasi-uniform unit vectors with ``z >= 0``."""
+
+    import torch
+
+    golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+    index = torch.arange(count, dtype=torch.float32) + 0.5
+    z = 1.0 - index / count
+    radius = torch.sqrt(torch.clamp(1.0 - z * z, min=0.0))
+    theta = golden_angle * index
+    return torch.stack(
+        (radius * torch.cos(theta), radius * torch.sin(theta), z), dim=1
+    )
+
+
+def _local_cap(center, radius_deg: float, step_deg: float):
+    """Return refinement directions inside a cone around ``center``."""
+
+    import torch
+
+    center = center / center.norm()
+    helper = (
+        torch.tensor([1.0, 0.0, 0.0])
+        if abs(float(center[0])) < 0.9
+        else torch.tensor([0.0, 1.0, 0.0])
+    )
+    tangent_u = torch.linalg.cross(center, helper)
+    tangent_u = tangent_u / tangent_u.norm()
+    tangent_v = torch.linalg.cross(center, tangent_u)
+
+    radius = math.radians(radius_deg)
+    step = math.radians(step_deg)
+    rings = max(1, int(round(radius / step)))
+    points = [center]
+    for ring in range(1, rings + 1):
+        ring_radius = ring * step
+        count = max(6, int(round(2.0 * math.pi * ring_radius / step)))
+        for index in range(count):
+            phi = 2.0 * math.pi * index / count
+            point = (
+                math.cos(ring_radius) * center
+                + math.sin(ring_radius)
+                * (math.cos(phi) * tangent_u + math.sin(phi) * tangent_v)
+            )
+            # The planar array cannot tell front from back; stay in front.
+            if float(point[2]) >= -1e-6:
+                points.append(point)
+    return torch.stack(points)
+
+
+def _score_directions(directions, weights, deltas, freqs):
+    """Correlate candidate directions with the measured cross-spectra."""
+
+    import torch
+
+    scores = torch.zeros(directions.shape[0], dtype=torch.float32)
+    omega = 2.0 * math.pi * freqs
+    for pair in range(deltas.shape[0]):
+        delays = directions @ deltas[pair]
+        angle = delays[:, None] * omega[None, :]
+        weight = weights[pair]
+        scores += (
+            weight.real[None, :] * torch.cos(angle)
+            + weight.imag[None, :] * torch.sin(angle)
+        ).sum(dim=1)
+    return scores
 
 
 def doa_detection(mics: Any, waveform: Any, sample_rate: int = 16000):
@@ -25,26 +128,74 @@ def doa_detection(mics: Any, waveform: Any, sample_rate: int = 16000):
     """
 
     import torch
-    from speechbrain.processing.features import STFT
-    from speechbrain.processing.multi_mic import Covariance, SrpPhat
 
-    if not isinstance(mics, torch.Tensor):
-        mics = torch.as_tensor(mics, dtype=torch.float32)
-    if not isinstance(waveform, torch.Tensor):
-        waveform = torch.as_tensor(waveform, dtype=torch.float32)
+    mics_t = torch.as_tensor(mics, dtype=torch.float32).reshape(-1, 3)
+    wave = torch.as_tensor(waveform, dtype=torch.float32)
+    if wave.ndim != 3:
+        raise ValueError(
+            "waveform must have shape (n_sources, time_step, n_channels)"
+        )
 
-    stft = STFT(sample_rate=sample_rate)
-    covariance = Covariance()
-    srp_phat = SrpPhat(mics=mics)
+    n_sources, time_steps, n_channels = wave.shape
+    if n_channels < 2 or time_steps == 0:
+        return torch.empty((n_sources, 0), dtype=torch.float32)
 
-    spectra = stft(waveform)
-    covariance_matrix = covariance(spectra)
-    directions = srp_phat(covariance_matrix)
-    directions = directions[:, 0, :]
-    directions[:, 2] = directions[:, 2].abs()
+    win_length = max(16, int(round(sample_rate * _FRAME_SECONDS)))
+    hop_length = max(1, int(round(sample_rate * _HOP_SECONDS)))
+    if time_steps < win_length:
+        wave = torch.nn.functional.pad(
+            wave, (0, 0, 0, win_length - time_steps)
+        )
 
-    radius = (directions[:, 0] ** 2 + directions[:, 1] ** 2).sqrt()
-    azimuth = torch.atan2(directions[:, 1], directions[:, 0]).rad2deg()
-    elevation = torch.atan2(directions[:, 2], radius).rad2deg()
+    spectrum = torch.stft(
+        wave.transpose(1, 2).reshape(n_sources * n_channels, -1),
+        n_fft=win_length,
+        hop_length=hop_length,
+        win_length=win_length,
+        window=torch.hamming_window(
+            win_length, periodic=True, dtype=torch.float32
+        ),
+        center=True,
+        onesided=True,
+        return_complex=True,
+    ).reshape(n_sources, n_channels, win_length // 2 + 1, -1)
+    # spectrum: (n_sources, n_channels, n_freq, n_frames)
+    freqs = torch.fft.rfftfreq(
+        win_length, d=1.0 / float(sample_rate)
+    )[1:]
+    spectrum = spectrum[..., 1:, :]
 
-    return torch.column_stack((azimuth, elevation))
+    pair_i, pair_j = torch.triu_indices(
+        n_channels, n_channels, offset=1
+    )
+    cross = spectrum[:, pair_i] * spectrum[:, pair_j].conj()
+    weights = cross.mean(dim=-1)
+    if _BETA:
+        weights = weights / (weights.abs().pow(_BETA) + _EPSILON)
+    deltas = (mics_t[pair_i] - mics_t[pair_j]) / _SPEED_OF_SOUND
+
+    coarse = _fibonacci_hemisphere(_COARSE_POINTS)
+    detections = []
+    for source in range(n_sources):
+        source_weights = weights[source]
+        scores = _score_directions(
+            coarse, source_weights, deltas, freqs
+        )
+        best = coarse[int(torch.argmax(scores))]
+
+        refinement = _local_cap(
+            best, _REFINE_RADIUS_DEG, _REFINE_STEP_DEG
+        )
+        refined_scores = _score_directions(
+            refinement, source_weights, deltas, freqs
+        )
+        best = refinement[int(torch.argmax(refined_scores))]
+
+        x, y, z = (float(value) for value in best)
+        azimuth = math.degrees(math.atan2(y, x)) % 360.0
+        elevation = math.degrees(
+            math.atan2(z, math.hypot(x, y))
+        )
+        detections.append((azimuth, elevation))
+
+    return torch.tensor(detections, dtype=torch.float32)

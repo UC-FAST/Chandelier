@@ -113,6 +113,13 @@ class MenuOptionId(str, Enum):
     LOC_DELAY_BINS = "loc_delay_bins"
     LOC_MARKER_FOV = "loc_marker_fov"
     LOC_MARKER_AZIMUTH = "loc_marker_azimuth"
+    LOC_MARKER_ELEVATION = "loc_marker_elevation"
+    LOC_MARKER_X_GAIN = "loc_marker_x_gain"
+    LOC_MARKER_Y_GAIN = "loc_marker_y_gain"
+    LOC_MARKER_MIC_X = "loc_marker_mic_x"
+    LOC_MARKER_MIC_Y = "loc_marker_mic_y"
+    LOC_MARKER_MIC_Z = "loc_marker_mic_z"
+    LOC_TALK_DISTANCE = "loc_talk_distance"
 
     # Gallery player
     PLAYER = "player"

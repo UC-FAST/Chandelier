@@ -64,15 +64,21 @@ def detect_sources(
 
     import torch
 
-    duet = Duet(
-        waveform.transpose(),
-        n_sources=n_sources,
-        sample_rate=sample_rate,
-        delay_max=delay_max,
-        n_delay_bins=n_delay_bins,
-        output_all_channels=True,
-    )
-    estimates = duet().astype(np.float32)
+    if n_sources == 1:
+        # DUET's single-source mask keeps every time-frequency bin, so the
+        # separation is a costly no-op.  Feeding the raw multichannel signal
+        # to the DOA estimator is equivalent and removes a source of lag.
+        estimates = np.asarray(waveform, dtype=np.float32)[None, ...]
+    else:
+        duet = Duet(
+            waveform.transpose(),
+            n_sources=n_sources,
+            sample_rate=sample_rate,
+            delay_max=delay_max,
+            n_delay_bins=n_delay_bins,
+            output_all_channels=True,
+        )
+        estimates = duet().astype(np.float32)
     if estimates.shape[0] == 0:
         return ()
 
