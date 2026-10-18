@@ -1,9 +1,15 @@
 """Mapping from spherical sound-source coordinates to screen pixels.
 
-The microphone array reports an azimuth in ``[0, 360)`` and an elevation in
-``[0, 90]``.  The camera preview is displayed on a rectangular screen; the
-mapping below projects the direction onto an ellipse whose horizontal and
-vertical radii peak at ``ele_const_w`` and ``ele_const_h`` respectively.
+The microphone array is mounted with its plane parallel to the camera image
+plane, so the array normal is the camera's optical axis.  ``azimuth`` rotates
+around the optical axis while ``elevation`` measures the angle out of the
+array plane: ``elevation=90`` points along the optical axis (screen centre)
+and ``elevation=0`` lies in the image plane (infinitely far away).
+
+The projection is the rectilinear (pinhole) model of a camera with square
+pixels.  No clamping is applied: a direction outside the camera's field of
+view yields coordinates outside the frame, which the marker overlay renders
+as a screen-edge arrow.
 """
 
 from __future__ import annotations
@@ -12,16 +18,10 @@ import math
 
 DEFAULT_WIDTH = 320
 DEFAULT_HEIGHT = 240
-DEFAULT_ELE_CONST_W = 65.0
-DEFAULT_ELE_CONST_H = 68.0
+DEFAULT_FOV = 62.0
 
-
-def _radius(elevation: float, const: float, maximum: float) -> float:
-    if elevation <= const:
-        t = elevation / const
-        return maximum * math.sin(t * math.pi / 2)
-    t = (elevation - const) / (90.0 - const)
-    return maximum * math.cos(t * math.pi / 2)
+# Keeps the horizon (elevation 0) finite while staying far outside any frame.
+MAX_OFFSCREEN_RADIUS = 10_000.0
 
 
 def aziel_to_screen_spherical(
@@ -29,36 +29,43 @@ def aziel_to_screen_spherical(
     ele: float,
     width: int = DEFAULT_WIDTH,
     height: int = DEFAULT_HEIGHT,
-    ele_const_w: float = DEFAULT_ELE_CONST_W,
-    ele_const_h: float = DEFAULT_ELE_CONST_H,
+    fov: float = DEFAULT_FOV,
+    azimuth_offset: float = 0.0,
 ) -> tuple[int, int]:
-    """Convert ``(azimuth, elevation)`` degrees to a clamped ``(x, y)`` pixel.
+    """Convert ``(azimuth, elevation)`` degrees to an unclamped pixel.
 
-    Following the original device convention, ``azi=0`` maps to the left
-    edge, ``azi=90`` to the top, ``azi=180`` to the right and ``azi=270`` to
-    the bottom.  The screen origin is the top-left corner.
+    ``fov`` is the horizontal field of view in degrees; the same focal length
+    is used on both axes because the pixels are square.  ``azimuth_offset``
+    is subtracted from the azimuth, which rotates the whole marker overlay
+    around the screen centre (a positive value turns it counter-clockwise).
+
+    Following the original device convention, ``azi=0`` maps to the left,
+    ``azi=90`` to the top, ``azi=180`` to the right and ``azi=270`` to the
+    bottom.  ``ele=90`` maps to the screen centre.  ``ele=0`` projects to
+    infinity and is capped at ``MAX_OFFSCREEN_RADIUS`` pixels from the
+    centre.  The result is *not* clamped to the frame.
     """
 
     if width <= 0 or height <= 0:
         raise ValueError("screen dimensions must be positive")
-    if not 0.0 <= ele_const_w < 90.0 or not 0.0 <= ele_const_h < 90.0:
-        raise ValueError("elevation constants must be in [0, 90)")
+    if not 0.0 < float(fov) < 180.0:
+        raise ValueError("horizontal FOV must be in (0, 180) degrees")
 
     azi = float(azi) % 360.0
     ele = min(90.0, max(0.0, float(ele)))
 
-    center_x = width / 2.0
-    center_y = height / 2.0
-    if ele == 90.0:
-        return int(round(center_x)), int(round(center_y))
+    focal = (width / 2.0) / math.tan(math.radians(float(fov)) / 2.0)
+    radians_ele = math.radians(ele)
+    sin_ele = math.sin(radians_ele)
+    if sin_ele <= 1e-12:
+        radius = MAX_OFFSCREEN_RADIUS
+    else:
+        radius = min(
+            focal * math.cos(radians_ele) / sin_ele,
+            MAX_OFFSCREEN_RADIUS,
+        )
 
-    radius_h = _radius(ele, ele_const_w, width / 2.0)
-    radius_v = _radius(ele, ele_const_h, height / 2.0 - 1.0)
-
-    azimuth_rad = math.radians(azi)
-    offset_x = radius_h * math.cos(azimuth_rad)
-    offset_y = -radius_v * math.sin(azimuth_rad)
-
-    x = max(1, min(width, int(round(center_x - offset_x))))
-    y = max(1, min(height, int(round(center_y + offset_y))))
-    return x, y
+    azimuth_rad = math.radians((azi - float(azimuth_offset)) % 360.0)
+    x = width / 2.0 - radius * math.cos(azimuth_rad)
+    y = height / 2.0 - radius * math.sin(azimuth_rad)
+    return int(round(x)), int(round(y))

@@ -1466,9 +1466,29 @@ class MenuControlledEnd(ControlledEnd):
     def _draw_footer(self, frame) -> None:
         theme = self._menu_theme
         y0 = self._height - self._footer_height
-        cv2.rectangle(
-            frame, (0, y0), (self._width, self._height), theme.footer_bg, -1
-        )
+        if self._retro_style == "aero":
+            top = theme.footer_bg
+            bottom = self._blend(theme.footer_bg, theme.border, 0.35)
+            span = max(1, self._height - y0 - 1)
+            for y in range(y0, self._height):
+                cv2.line(
+                    frame,
+                    (0, y),
+                    (self._width, y),
+                    self._blend(top, bottom, (y - y0) / span),
+                    1,
+                )
+            cv2.line(
+                frame, (0, y0), (self._width, y0), (255, 255, 255), 1
+            )
+        else:
+            cv2.rectangle(
+                frame,
+                (0, y0),
+                (self._width, self._height),
+                theme.footer_bg,
+                -1,
+            )
         if self._select_index is not None:
             hints = "OK SAVE   < > VALUE   X CANCEL"
         elif self._current_options:
@@ -1889,7 +1909,19 @@ class MenuControlledEnd(ControlledEnd):
             0, (available - block_height) // 2
         )
         retro = self._retro_style
-        if retro in {"luna", "win7", "win10"}:
+        if retro == "aero":
+            self._glass_rect(
+                frame,
+                x1,
+                block_top - 4,
+                x2,
+                block_top + block_height + 4,
+                6,
+                theme.surface,
+                theme.surface_alt,
+                border=theme.border,
+            )
+        elif retro in {"luna", "win7", "win10"}:
             radius = 4 if retro == "win10" else 6
             self._rounded_rect(
                 frame,
@@ -1948,6 +1980,18 @@ class MenuControlledEnd(ControlledEnd):
                     row_top + row_height - 2,
                     selection_bg,
                     3,
+                )
+            elif chosen and retro == "aero":
+                self._glass_rect(
+                    frame,
+                    x1 + 2,
+                    row_top + 1,
+                    x2 - 2,
+                    row_top + row_height - 2,
+                    4,
+                    self._blend(theme.accent, (255, 255, 255), 0.55),
+                    theme.accent,
+                    gloss=False,
                 )
             elif chosen and retro == "win10":
                 self._rounded_rect(
@@ -2049,6 +2093,29 @@ class MenuControlledEnd(ControlledEnd):
                 theme.header_bg, -1,
             )
             self._rounded_rect(frame, x1, y1, x2, y2, theme.accent, 8, 1)
+        elif retro == "aero":
+            self._glass_rect(
+                frame,
+                x1,
+                y1,
+                x2,
+                y2,
+                8,
+                theme.surface,
+                theme.surface_alt,
+            )
+            self._glass_rect(
+                frame,
+                x1 + 1,
+                y1 + 1,
+                x2 - 1,
+                y1 + 22,
+                7,
+                self._blend(theme.header_bg, (255, 255, 255), 0.55),
+                theme.header_bg,
+                gloss=False,
+            )
+            self._rounded_rect(frame, x1, y1, x2, y2, theme.border, 8, 1)
         elif retro == "win10":
             self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 4)
             cv2.rectangle(
@@ -2135,6 +2202,55 @@ class MenuControlledEnd(ControlledEnd):
         cv2.line(frame, (x1, y1), (x1, y2), top_left, 1)
         cv2.line(frame, (x1, y2), (x2, y2), bottom_right, 1)
         cv2.line(frame, (x2, y1), (x2, y2), bottom_right, 1)
+
+    def _glass_rect(
+        self,
+        frame,
+        x1: int,
+        y1: int,
+        x2: int,
+        y2: int,
+        radius: int,
+        top,
+        bottom,
+        border=None,
+        gloss: bool = True,
+    ) -> None:
+        """Rounded Aero-glass surface with a vertical sheen."""
+
+        x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+        radius = max(0, min(radius, (x2 - x1) // 2, (y2 - y1) // 2))
+        self._rounded_rect(frame, x1, y1, x2, y2, bottom, radius)
+
+        height = max(1, y2 - y1)
+        for y in range(y1, y2 + 1):
+            fraction = (y - y1) / height
+            color = self._blend(top, bottom, fraction)
+            inset = 0
+            if radius and y < y1 + radius:
+                dy = (y1 + radius - y) / radius
+                inset = int(
+                    round(radius - radius * math.sqrt(max(0.0, 1.0 - dy * dy)))
+                )
+            elif radius and y > y2 - radius:
+                dy = (y - (y2 - radius)) / radius
+                inset = int(
+                    round(radius - radius * math.sqrt(max(0.0, 1.0 - dy * dy)))
+                )
+            cv2.line(frame, (x1 + inset, y), (x2 - inset, y), color, 1)
+
+        if gloss and y2 - y1 >= 6:
+            highlight = self._blend(top, (255, 255, 255), 0.65)
+            cv2.line(
+                frame,
+                (x1 + radius + 2, y1 + 2),
+                (x2 - radius - 2, y1 + 2),
+                highlight,
+                1,
+                cv2.LINE_AA,
+            )
+        if border is not None:
+            self._rounded_rect(frame, x1, y1, x2, y2, border, radius, 1)
 
     def _draw_retro_header(self, frame, luna: bool) -> None:
         theme = self._menu_theme
@@ -2307,6 +2423,82 @@ class MenuControlledEnd(ControlledEnd):
             cv2.LINE_AA,
         )
 
+    def _draw_aero_header(self, frame) -> None:
+        theme = self._menu_theme
+        height = self._header_height
+        self._glass_rect(
+            frame,
+            0,
+            0,
+            self._width,
+            height - 1,
+            0,
+            self._blend(theme.header_bg, (255, 255, 255), 0.65),
+            theme.header_bg,
+        )
+        cv2.line(frame, (0, 0), (self._width, 0), (255, 255, 255), 1)
+        cv2.line(
+            frame,
+            (0, height - 1),
+            (self._width, height - 1),
+            self._blend(theme.header_bg, (0, 0, 0), 0.35),
+            1,
+        )
+
+        title = self._title or ""
+        text_y = height - 5
+        self._text(
+            frame,
+            title,
+            (self._padding[0] + 5, text_y + 1),
+            theme.font_face,
+            self._font_scale,
+            self._blend(theme.header_bg, (0, 0, 0), 0.5),
+            1,
+            cv2.LINE_AA,
+        )
+        self._text(
+            frame,
+            title,
+            (self._padding[0] + 4, text_y),
+            theme.font_face,
+            self._font_scale,
+            theme.header_text or theme.text,
+            1,
+            cv2.LINE_AA,
+        )
+
+        page_text = f"{self._current_page + 1}/{max(1, self._page_count)}"
+        (page_width, _), _ = self._measure(
+            page_text, theme.font_face, self._small_font_scale, 1
+        )
+        pill_width = page_width + 12
+        x2 = self._width - self._padding[2]
+        x1 = x2 - pill_width
+        y1 = (height - 14) // 2
+        self._glass_rect(
+            frame,
+            x1,
+            y1,
+            x2,
+            y1 + 14,
+            7,
+            self._blend(theme.header_bg, (255, 255, 255), 0.55),
+            self._blend(theme.header_bg, (255, 255, 255), 0.2),
+            border=(255, 255, 255),
+            gloss=False,
+        )
+        self._text(
+            frame,
+            page_text,
+            (x1 + 6, y1 + 11),
+            theme.font_face,
+            self._small_font_scale,
+            theme.header_text or theme.text,
+            1,
+            cv2.LINE_AA,
+        )
+
     def _draw_win10_header(self, frame) -> None:
         theme = self._menu_theme
         height = self._header_height
@@ -2445,6 +2637,47 @@ class MenuControlledEnd(ControlledEnd):
             )
             icon_color = (
                 theme.accent if selected
+                else (theme.accent if enabled else theme.text_dim)
+            )
+        elif style == "aero":
+            if selected:
+                self._glass_rect(
+                    frame,
+                    x1 + 2,
+                    y1 + 1,
+                    x2 - 2,
+                    y2 - 2,
+                    4,
+                    self._blend(theme.accent, (255, 255, 255), 0.55),
+                    theme.accent,
+                    border=(255, 255, 255),
+                )
+            else:
+                row_bg = (
+                    theme.surface if index % 2 == 0
+                    else theme.surface_alt
+                )
+                self._rounded_rect(
+                    frame, x1 + 2, y1 + 1, x2 - 2, y2 - 2, row_bg, 4
+                )
+                self._rounded_rect(
+                    frame,
+                    x1 + 2,
+                    y1 + 1,
+                    x2 - 2,
+                    y2 - 2,
+                    theme.border,
+                    4,
+                    1,
+                )
+            foreground = (
+                (theme.selection_text or theme.accent_text)
+                if selected
+                else (theme.text if enabled else theme.text_dim)
+            )
+            icon_color = (
+                (theme.selection_text or theme.accent_text)
+                if selected
                 else (theme.accent if enabled else theme.text_dim)
             )
         else:  # win10
@@ -2590,6 +2823,20 @@ class MenuControlledEnd(ControlledEnd):
                 frame, (bx1, by1), (bx1 + badge_width, by2),
                 theme.accent, 1, cv2.LINE_AA,
             )
+        elif style == "aero":
+            foreground_badge = theme.accent
+            self._glass_rect(
+                frame,
+                bx1,
+                by1,
+                bx1 + badge_width,
+                by2,
+                badge_height // 2,
+                self._blend(theme.surface, (255, 255, 255), 0.5),
+                theme.surface,
+                border=theme.border,
+                gloss=False,
+            )
         else:  # win10
             background = theme.surface_alt
             foreground_badge = (
@@ -2629,6 +2876,22 @@ class MenuControlledEnd(ControlledEnd):
         if self._retro_style == "win2000":
             self._bevel_rect(
                 frame, x1, y1, x2, y2, theme.surface_alt, raised=True
+            )
+        elif self._retro_style == "aero":
+            self._glass_rect(
+                frame,
+                x1,
+                y1,
+                x2,
+                y2,
+                5,
+                theme.surface,
+                theme.surface_alt,
+                border=theme.border,
+            )
+            cv2.rectangle(
+                frame, (x1 + 2, y1 + 5), (x1 + 5, y2 - 5),
+                theme.accent, -1,
             )
         else:
             radius = 4 if self._retro_style == "win10" else 5
@@ -2687,6 +2950,8 @@ class MenuControlledEnd(ControlledEnd):
             self._draw_retro_header(sketch, False)
         elif style == "win7":
             self._draw_win7_header(sketch)
+        elif style == "aero":
+            self._draw_aero_header(sketch)
         else:
             self._draw_win10_header(sketch)
         if self._select_index is None:
@@ -2752,7 +3017,7 @@ class MenuControlledEnd(ControlledEnd):
         if style == "classic":
             self._decorate_classic()
             return
-        if style in {"luna", "win2000", "win7", "win10"}:
+        if style in {"luna", "win2000", "win7", "win10", "aero"}:
             self._decorate_retro(style)
             return
 

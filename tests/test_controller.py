@@ -43,12 +43,17 @@ class RecordingEnd(ControlledEnd):
         self.received.append((sender, payload))
 
 
-def _controller():
+def _controller(preview_server=None):
     config = load_config()
     display = FakeDisplay(config.screen.width, config.screen.height)
     first = RecordingEnd(EndId.CAMERA.value)
     second = RecordingEnd(EndId.GALLERY.value)
-    controller = Controller(display, [first, second], config)
+    controller = Controller(
+        display,
+        [first, second],
+        config,
+        preview_server=preview_server,
+    )
     return controller, display, first, second
 
 
@@ -315,3 +320,31 @@ def test_reboot_falls_back_to_systemctl(monkeypatch):
         ["sudo", "-n", "reboot"],
         ["systemctl", "reboot"],
     ]
+
+
+def test_controller_publishes_frames_and_stops_the_preview_server():
+    class FakePreviewServer:
+        def __init__(self):
+            self.frames = []
+            self.stopped = False
+
+        def publish(self, frame):
+            self.frames.append(frame.copy())
+
+        def stop(self):
+            self.stopped = True
+
+    preview = FakePreviewServer()
+    controller, _, _, _ = _controller(preview_server=preview)
+    thread = threading.Thread(target=controller.main_loop, daemon=True)
+    thread.start()
+
+    deadline = time.time() + 2
+    while not preview.frames and time.time() < deadline:
+        time.sleep(0.01)
+    controller.request_stop()
+    thread.join(timeout=2)
+
+    assert preview.frames
+    assert preview.frames[0].shape == (240, 320, 3)
+    assert preview.stopped is True

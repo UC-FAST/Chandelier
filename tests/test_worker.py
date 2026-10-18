@@ -93,22 +93,32 @@ def test_shared_localizer_settings_round_trip_and_clamp():
     )
     settings = SharedLocalizerSettings(config)
     assert settings.snapshot() == LocalizerSettings.from_config(config)
+    assert settings.snapshot().marker_fov == pytest.approx(62.0)
+    assert settings.snapshot().marker_azimuth_offset == pytest.approx(0.0)
 
     assert settings.update(
         n_sources=5,
         confidence_threshold=0.25,
         mic_rotation=370.0,
+        marker_fov=90.5,
+        marker_azimuth_offset=370.0,
     )
     snapshot = settings.snapshot()
     assert snapshot.n_sources == 5
     assert snapshot.confidence_threshold == 0.25
     assert snapshot.mic_rotation == pytest.approx(10.0)
+    assert snapshot.marker_fov == pytest.approx(90.5)
+    assert snapshot.marker_azimuth_offset == pytest.approx(10.0)
 
     # Integer fields are rounded and every value is clamped to the menu range.
-    assert settings.update(n_sources=99, n_delay_bins=1)
+    assert settings.update(n_sources=99, n_delay_bins=1, marker_fov=999)
     snapshot = settings.snapshot()
     assert snapshot.n_sources == 8
     assert snapshot.n_delay_bins == 2
+    assert snapshot.marker_fov == pytest.approx(179.0)
+
+    assert settings.update(marker_fov=0)
+    assert settings.snapshot().marker_fov == pytest.approx(1.0)
 
     with pytest.raises(KeyError):
         settings.update(unknown_setting=1)
@@ -136,7 +146,7 @@ def test_localizer_handle_forwards_updates():
 
 
 def _child_update_settings(settings):
-    settings.update(n_sources=7, mic_rotation=45.0)
+    settings.update(n_sources=7, mic_rotation=45.0, marker_fov=75.0)
 
 
 def test_shared_settings_work_across_processes():
@@ -150,6 +160,7 @@ def test_shared_settings_work_across_processes():
     snapshot = settings.snapshot()
     assert snapshot.n_sources == 7
     assert snapshot.mic_rotation == pytest.approx(45.0)
+    assert snapshot.marker_fov == pytest.approx(75.0)
 
 
 def test_shared_state_works_across_processes():

@@ -6,12 +6,17 @@ from chandelier.ui.camera_end import CameraControlledEnd
 from tests.fakes import FakeCamera, FakeLeds
 
 
-def _make_end(localizer=None):
+def _make_end(localizer=None, preview_server=None, stats=None):
     config = load_config()
     tree = load_menu_config()["camera"]
     camera = FakeCamera(config.screen.width, config.screen.height)
     end = CameraControlledEnd(
-        camera, FakeLeds(), config, localizer=localizer
+        camera,
+        FakeLeds(),
+        config,
+        localizer=localizer,
+        preview_server=preview_server,
+        stats=stats,
     )
     end._msg_sender = lambda *args: None
     end.msg_receiver("menu", ("0", tree))
@@ -44,14 +49,24 @@ def test_localizer_menu_settings_are_forwarded():
     localizer = FakeLocalizer()
     end, _, tree = _make_end(localizer=localizer)
 
-    initial_sources = next(
-        option["value"]
-        for section in tree.values()
-        for option in section.get("options", [])
-        if option.get("id") == "loc_n_sources"
-    )
+    def initial_value(option_id):
+        return next(
+            option["value"]
+            for section in tree.values()
+            for option in section.get("options", [])
+            if option.get("id") == option_id
+        )
+
     assert localizer.updates
-    assert localizer.updates[-1]["n_sources"] == initial_sources
+    assert localizer.updates[-1]["n_sources"] == initial_value(
+        "loc_n_sources"
+    )
+    assert localizer.updates[-1]["marker_fov"] == pytest.approx(
+        initial_value("loc_marker_fov")
+    )
+    assert localizer.updates[-1]["marker_azimuth_offset"] == pytest.approx(
+        initial_value("loc_marker_azimuth")
+    )
 
     for section in tree.values():
         for option in section.get("options", []):
@@ -61,12 +76,46 @@ def test_localizer_menu_settings_are_forwarded():
                 option["value"] = 90
             elif option.get("id") == "loc_confidence":
                 option["value"] = 0.2
+            elif option.get("id") == "loc_marker_fov":
+                option["value"] = 70
+            elif option.get("id") == "loc_marker_azimuth":
+                option["value"] = 15
 
     end.load_settings()
     update = localizer.updates[-1]
     assert update["n_sources"] == 6
     assert update["mic_rotation"] == 90.0
     assert update["confidence_threshold"] == 0.2
+    assert update["marker_fov"] == pytest.approx(70.0)
+    assert update["marker_azimuth_offset"] == pytest.approx(15.0)
+
+
+def test_web_server_menu_setting_is_forwarded():
+    class FakePreviewServer:
+        def __init__(self):
+            self.states = []
+
+        def set_enabled(self, enabled):
+            self.states.append(enabled)
+            return True
+
+    preview = FakePreviewServer()
+    end, _, tree = _make_end(preview_server=preview)
+
+    expected = True
+    for section in tree.values():
+        for option in section.get("options", []):
+            if option.get("id") == "web_server":
+                expected = bool(option["value"])
+    assert preview.states
+    assert preview.states[-1] is expected
+
+    for section in tree.values():
+        for option in section.get("options", []):
+            if option.get("id") == "web_server":
+                option["value"] = False
+    end.load_settings()
+    assert preview.states[-1] is False
 
 
 def test_show_hist_state_is_read_from_menu():
@@ -177,7 +226,9 @@ def test_display_and_capture_settings_are_read():
     _set_option(tree, "show_center", True)
     _set_option(tree, "show_zebra", True)
     _set_option(tree, "zebra_threshold", 200)
-    _set_option(tree, "show_status_bar", True)
+    _set_option(
+        tree, "status_bar_position", {"content": "Sides", "value": "sides"}
+    )
     _set_option(tree, "capture_mode", {"content": "Burst", "value": 1})
     _set_option(tree, "burst_count", 4)
     _set_option(tree, "record_mode", True)
@@ -188,7 +239,7 @@ def test_display_and_capture_settings_are_read():
     assert end._state.show_center is True
     assert end._state.show_zebra is True
     assert end._state.zebra_threshold == 200
-    assert end._state.show_status_bar is True
+    assert end._state.status_position == "sides"
     assert end._state.capture_mode == "burst"
     assert end._state.burst_count == 4
     assert end._state.record_mode is True
@@ -253,6 +304,15 @@ def test_record_mode_starts_and_stops_recording():
     assert end._leds.blue.is_on is False
 
 
+def test_status_bar_off_is_read_from_menu():
+    end, _, tree = _make_end()
+    _set_option(
+        tree, "status_bar_position", {"content": "Off", "value": "off"}
+    )
+    end.load_settings()
+    assert end._state.status_position == "off"
+
+
 def test_all_overlays_render_without_errors():
     end, _, tree = _make_end()
     for option_id in (
@@ -260,9 +320,11 @@ def test_all_overlays_render_without_errors():
         "show_center",
         "show_zebra",
         "show_hist",
-        "show_status_bar",
     ):
         _set_option(tree, option_id, True)
+    _set_option(
+        tree, "status_bar_position", {"content": "Sides", "value": "sides"}
+    )
     _set_option(tree, "record_mode", True)
     end.load_settings()
     end.shutter_press_action()
@@ -270,3 +332,48 @@ def test_all_overlays_render_without_errors():
     frame = next(end.main_loop())
     assert frame.shape == (240, 320, 3)
     end.on_exit()
+
+
+def test_web_server_bool_message_is_applied():
+    class FakePreviewServer:
+        def __init__(self):
+            self.states = []
+
+        def set_enabled(self, enabled):
+            self.states.append(enabled)
+            return True
+
+    preview = FakePreviewServer()
+    end, _, _ = _make_end(preview_server=preview)
+
+    end.msg_receiver("camera", False)
+    assert preview.states[-1] is False
+    end.msg_receiver("camera", True)
+    assert preview.states[-1] is True
+
+
+def test_preview_server_errors_do_not_break_settings():
+    class BrokenPreviewServer:
+        def set_enabled(self, enabled):
+            raise RuntimeError("boom")
+
+    end, _, _ = _make_end(preview_server=BrokenPreviewServer())
+    end.load_settings()
+
+
+def test_status_bar_fps_uses_the_regular_text_role():
+    end, _, _ = _make_end()
+    items = end._status_items()
+    fps = f"{end._camera.frame_per_second:.0f}fps"
+    assert (fps, "text") in items
+
+
+def test_status_bar_shows_cpu_and_temperature():
+    class FakeStats:
+        def cpu_snapshot(self):
+            return (85.0, 65.2)
+
+    end, _, _ = _make_end(stats=FakeStats())
+    items = end._status_items()
+    assert ("CPU85%", "danger") in items
+    assert ("T65C", "warning") in items

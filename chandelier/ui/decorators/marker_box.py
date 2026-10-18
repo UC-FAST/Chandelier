@@ -3,7 +3,9 @@
 Each tracked source keeps a small time window of recent detections.  A marker
 is drawn at the median position (robust against a single-frame outlier), with
 a short trail showing recent movement, and disappears after ``ttl`` seconds
-without a new detection.
+without a new detection.  A source whose centre falls outside the frame is
+shown as an arrow on the screen edge, pointing towards the off-screen
+direction.
 
 Coordinates are in the frame's pixel space (the controller draws this after
 the camera preview has been scaled to the LCD resolution).
@@ -11,12 +13,14 @@ the camera preview has been scaled to the LCD resolution).
 
 from __future__ import annotations
 
+import math
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import Iterable
 
 import cv2
+import numpy as np
 
 # High-contrast BGR colours: red, green, cyan, orange, magenta, yellow.
 _PALETTE: tuple[tuple[int, int, int], ...] = (
@@ -93,8 +97,10 @@ class MarkerBox:
     ) -> None:
         if coordinate is None:
             return
-        x = min(self._width - 1, max(0, int(coordinate[0])))
-        y = min(self._height - 1, max(0, int(coordinate[1])))
+        # Keep the raw position: the drawing code needs to know whether the
+        # source is still on screen so it can render an edge arrow instead.
+        x = int(coordinate[0])
+        y = int(coordinate[1])
         samples = self._tracks.setdefault(
             track_id, deque(maxlen=self._cache)
         )
@@ -210,11 +216,94 @@ class MarkerBox:
             cv2.LINE_AA,
         )
 
+    def _is_offscreen(self, x: int, y: int) -> bool:
+        return not (0 <= x < self._width and 0 <= y < self._height)
+
+    def _edge_tip(
+        self, x: int, y: int, margin: int
+    ) -> tuple[float, float]:
+        """Intersect the centre-to-point ray with an inset screen border."""
+
+        center_x = self._width / 2.0
+        center_y = self._height / 2.0
+        dx = x - center_x
+        dy = y - center_y
+
+        left = float(margin)
+        top = float(margin)
+        right = max(left, float(self._width - 1 - margin))
+        bottom = max(top, float(self._height - 1 - margin))
+
+        factors: list[float] = []
+        if dx > 0:
+            factors.append((right - center_x) / dx)
+        elif dx < 0:
+            factors.append((left - center_x) / dx)
+        if dy > 0:
+            factors.append((bottom - center_y) / dy)
+        elif dy < 0:
+            factors.append((top - center_y) / dy)
+        positive = [factor for factor in factors if factor > 0]
+        if not positive:
+            return center_x, center_y
+
+        factor = min(positive)
+        return center_x + dx * factor, center_y + dy * factor
+
+    def _draw_arrow(
+        self, frame, x: int, y: int, color: tuple[int, int, int], text: str
+    ) -> None:
+        """Draw a border arrow pointing towards an off-screen position."""
+
+        center_x = self._width / 2.0
+        center_y = self._height / 2.0
+        dx = x - center_x
+        dy = y - center_y
+        norm = math.hypot(dx, dy)
+        if norm == 0:
+            return
+        unit_x, unit_y = dx / norm, dy / norm
+
+        tip_x, tip_y = self._edge_tip(x, y, margin=3)
+        length = min(
+            max(12, min(self._box_size)),
+            max(6, min(self._width, self._height) // 3),
+        )
+        base_x = tip_x - unit_x * length
+        base_y = tip_y - unit_y * length
+        half = max(3.0, length * 0.45)
+        perp_x, perp_y = -unit_y, unit_x
+
+        triangle = np.array(
+            [
+                (round(tip_x), round(tip_y)),
+                (
+                    round(base_x + perp_x * half),
+                    round(base_y + perp_y * half),
+                ),
+                (
+                    round(base_x - perp_x * half),
+                    round(base_y - perp_y * half),
+                ),
+            ],
+            dtype=np.int32,
+        )
+        cv2.fillConvexPoly(frame, triangle, color, cv2.LINE_AA)
+        cv2.polylines(frame, [triangle], True, (0, 0, 0), 2, cv2.LINE_AA)
+        self._draw_label(frame, round(base_x), round(base_y), text)
+
     def _draw_track(
         self, frame, track_id: int, samples: deque[_Sample]
     ) -> None:
         center_x, center_y = self._smoothed_position(samples)
         color = self._track_color(track_id)
+
+        if self._is_offscreen(center_x, center_y):
+            self._draw_arrow(
+                frame, center_x, center_y, color, samples[-1].text
+            )
+            return
+
         half_width = self._box_size[0] // 2
         half_height = self._box_size[1] // 2
         x1 = max(0, min(self._width - 1, center_x - half_width))

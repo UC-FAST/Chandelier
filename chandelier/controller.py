@@ -39,6 +39,7 @@ class Controller:
         ends: list[ControlledEnd],
         config: AppConfig,
         argv: list[str] | None = None,
+        preview_server=None,
     ):
         if not ends:
             raise ValueError("at least one controlled end is required")
@@ -47,6 +48,7 @@ class Controller:
         self._ends = {end.id: end for end in ends}
         self._ordered_ends = list(ends)
         self._config = config
+        self._preview_server = preview_server
         self._current_index = 0
         self._last_end_id: str | None = None
         self._signal = False
@@ -302,6 +304,14 @@ class Controller:
                         )
                         cv2.waitKey(5)
 
+                    if self._preview_server is not None:
+                        try:
+                            self._preview_server.publish(frame)
+                        except Exception:
+                            logger.debug(
+                                "preview publish failed", exc_info=True
+                            )
+
                     self._display.show(frame)
         except KeyboardInterrupt:
             logger.info("interrupted by user")
@@ -313,6 +323,13 @@ class Controller:
             return
         self._shutdown_done = True
         self._stop_event.set()
+        if self._preview_server is not None:
+            try:
+                self._preview_server.stop()
+            except Exception:
+                logger.debug(
+                    "failed to stop preview server", exc_info=True
+                )
         try:
             self._display.clear()
         except Exception:

@@ -131,20 +131,71 @@ def test_power_report_with_fake_sensors():
 
 def test_hardware_report_with_fake_psutil(monkeypatch):
     fake = types.ModuleType("psutil")
-    fake.cpu_percent = lambda interval=None: 12.5
+    fake.cpu_percent = (
+        lambda interval=None, percpu=False: [1, 2, 3, 4] if percpu else 12.5
+    )
     fake.virtual_memory = lambda: types.SimpleNamespace(used=50, total=100)
+    fake.swap_memory = lambda: types.SimpleNamespace(percent=3.5)
     fake.disk_usage = lambda path: types.SimpleNamespace(percent=25.0)
     fake.sensors_temperatures = lambda: {
         "cpu_thermal": [types.SimpleNamespace(current=45.0)]
     }
     monkeypatch.setitem(sys.modules, "psutil", fake)
+    monkeypatch.setattr(
+        SystemStats,
+        "_run",
+        staticmethod(lambda command: "throttled=0x0"),
+    )
 
     stats = SystemStats(FakeSensor(), FakeSensor(), FakeSensor())
     report = stats.hardware_report()
     assert report["CPU {}%"] == 12.5
+    assert report["Cores {}"] == "1 2 3 4%"
     assert report["MEM {}%"] == 50.0
+    assert report["Swap {}%"] == 3.5
     assert report["DISK {}%"] == 25.0
     assert report["TEMP {} C"] == 45.0
+    assert report["Throttle {}"] == "OK"
+
+
+def test_throttle_flags_are_summarised():
+    assert SystemStats._format_throttle(0) == "OK"
+    assert SystemStats._format_throttle(0x1) == "UV"
+    assert SystemStats._format_throttle(0x5) == "UV THROT"
+    assert SystemStats._format_throttle(0x10000) == "OK !"
+
+
+def test_cpu_snapshot_with_fake_psutil(monkeypatch):
+    fake = types.ModuleType("psutil")
+    fake.cpu_percent = lambda interval=None: 42.5
+    fake.sensors_temperatures = lambda: {
+        "cpu_thermal": [types.SimpleNamespace(current=51.0)]
+    }
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+    stats = SystemStats(FakeSensor(), FakeSensor(), FakeSensor())
+    assert stats.cpu_snapshot() == (42.5, 51.0)
+    # The status bar polls this every frame; the value is cached.
+    assert stats.cpu_snapshot() == (42.5, 51.0)
+
+
+def test_cpu_snapshot_samples_once_per_second(monkeypatch):
+    calls = []
+
+    def cpu_percent(interval=None):
+        calls.append(1)
+        return 10.0
+
+    fake = types.ModuleType("psutil")
+    fake.cpu_percent = cpu_percent
+    fake.sensors_temperatures = lambda: {}
+    monkeypatch.setitem(sys.modules, "psutil", fake)
+
+    stats = SystemStats(FakeSensor(), FakeSensor(), FakeSensor())
+    stats.cpu_snapshot()
+    stats.cpu_snapshot()
+    stats.cpu_snapshot()
+    assert len(calls) == 1
 
 
 def test_network_report_internet_probe_does_not_block(monkeypatch):

@@ -82,6 +82,31 @@ def test_multiple_marker_mode_is_accepted(config_file, tmp_path):
     assert config.marker.max_sources == 2
 
 
+@pytest.mark.parametrize("fov", [0, 180, -5])
+def test_invalid_marker_fov_is_rejected(config_file, tmp_path, fov):
+    raw = json.loads(config_file.read_text(encoding="utf-8"))
+    raw["localizer"]["marker_fov"] = fov
+    bad = tmp_path / "bad_fov.json"
+    bad.write_text(json.dumps(raw), encoding="utf-8")
+    clear_config_cache()
+
+    with pytest.raises(ConfigError, match="marker_fov"):
+        load_config(bad)
+
+
+def test_marker_projection_settings_are_parsed(config_file, tmp_path):
+    raw = json.loads(config_file.read_text(encoding="utf-8"))
+    raw["localizer"]["marker_fov"] = 70.5
+    raw["localizer"]["marker_azimuth_offset"] = 370
+    target = tmp_path / "projection.json"
+    target.write_text(json.dumps(raw), encoding="utf-8")
+    clear_config_cache()
+
+    config = load_config(target)
+    assert config.localizer.marker_fov == pytest.approx(70.5)
+    assert config.localizer.marker_azimuth_offset == pytest.approx(10.0)
+
+
 def test_shipped_menu_config_is_valid():
     tree = load_menu_config()
     assert "camera" in tree
@@ -251,6 +276,8 @@ def test_ensure_menu_defaults_adds_localizer_section():
         "loc_n_sources",
         "loc_confidence",
         "loc_mic_rotation",
+        "loc_marker_fov",
+        "loc_marker_azimuth",
         "loc_speech_threshold",
         "loc_max_chunks",
         "loc_delay_max",
@@ -266,6 +293,138 @@ def test_ensure_menu_defaults_adds_localizer_section():
     }
     assert "localizer" in root_links
     assert "localizer" not in settings_links
+    assert ensure_menu_defaults(tree) is False
+
+
+def test_shipped_menu_has_web_server_before_power():
+    tree = load_menu_config()
+    options = tree["camera"]["system"]["options"]
+    ids = [option["id"] for option in options]
+    assert "web_server" in ids
+    assert ids.index("web_server") + 1 == ids.index("power")
+
+    option = options[ids.index("web_server")]
+    assert option["type"] == "bool"
+    assert option["receiver"] == "camera"
+    assert isinstance(option["value"], bool)
+
+
+def test_ensure_menu_defaults_adds_web_server_before_power():
+    from chandelier.menu_defaults import ensure_menu_defaults
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "system": {
+                "title": "System",
+                "options": [
+                    {
+                        "id": "language",
+                        "content": "Language",
+                        "type": "option",
+                        "value": {"content": "English", "value": "en"},
+                        "options": [
+                            {"content": "English", "value": "en"}
+                        ],
+                    },
+                    {
+                        "id": "theme",
+                        "content": "Theme",
+                        "type": "option",
+                        "value": {"content": "Dark Pro", "value": "dark_pro"},
+                        "options": [
+                            {"content": "Dark Pro", "value": "dark_pro"}
+                        ],
+                    },
+                    {
+                        "id": "power",
+                        "content": "Power Action",
+                        "type": "option",
+                        "value": {"content": "Reboot", "value": "reboot"},
+                        "options": [
+                            {"content": "Reboot", "value": "reboot"}
+                        ],
+                    },
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+    assert ensure_menu_defaults(tree) is True
+    ids = [option["id"] for option in tree["camera"]["system"]["options"]]
+    assert ids == ["language", "theme", "web_server", "power"]
+    assert ensure_menu_defaults(tree) is False
+
+
+@pytest.mark.parametrize(
+    ("show", "position", "expected"),
+    [
+        (True, "bottom", "bottom"),
+        (True, "sides", "sides"),
+        (False, "top", "off"),
+        (True, None, "top"),
+        (False, None, "off"),
+    ],
+)
+def test_ensure_menu_defaults_merges_status_bar_options(
+    show, position, expected
+):
+    from chandelier.menu_defaults import ensure_menu_defaults
+
+    options = [
+        {
+            "id": "show_status_bar",
+            "content": "Status Bar",
+            "type": "bool",
+            "icon": "monitor",
+            "value": show,
+        }
+    ]
+    if position is not None:
+        options.append(
+            {
+                "id": "status_bar_position",
+                "content": "Bar Position",
+                "type": "option",
+                "icon": "monitor",
+                "value": {
+                    "content": position.title(),
+                    "value": position,
+                },
+                "options": [
+                    {"content": "Top", "value": "top"},
+                    {"content": "Bottom", "value": "bottom"},
+                    {"content": "Sides", "value": "sides"},
+                ],
+                "enable_if": {"id": "show_status_bar", "value": True},
+                "enable": True,
+            }
+        )
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "display": {"title": "Display", "options": options},
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+    assert ensure_menu_defaults(tree) is True
+
+    merged_options = tree["camera"]["display"]["options"]
+    ids = [option["id"] for option in merged_options]
+    assert "show_status_bar" not in ids
+
+    merged = next(
+        option
+        for option in merged_options
+        if option["id"] == "status_bar_position"
+    )
+    assert merged["value"]["value"] == expected
+    assert merged["content"] == "Status Bar"
+    assert "enable_if" not in merged
+    assert any(
+        choice["value"] == "off" for choice in merged["options"]
+    )
     assert ensure_menu_defaults(tree) is False
 
 

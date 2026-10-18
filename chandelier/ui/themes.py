@@ -41,7 +41,8 @@ class MenuTheme:
     irq: tuple[int, int, int]
     cursor_style: str = "fill"  # "fill" | "bar" | "outline"
     font_face: int = cv2.FONT_HERSHEY_SIMPLEX
-    render_style: str = "modern"  # "modern" | "classic" | "luna" | "win2000"
+    # "modern" | "classic" | "aero" | "luna" | "win2000" | "win7" | "win10"
+    render_style: str = "modern"
     disabled_cursor: tuple[int, int, int] | None = None
     header_text: tuple[int, int, int] | None = None
     header_text_dim: tuple[int, int, int] | None = None
@@ -145,6 +146,34 @@ THEMES: dict[str, MenuTheme] = {
         cursor_style="fill",
         render_style="classic",
         disabled_cursor=(169, 169, 169),  # darkgray
+    ),
+    "aero": MenuTheme(
+        id="aero",
+        label="Aero",
+        # Vista/7 Aero glass: a sky-blue chrome above pale, translucent
+        # content cards.  All colours are BGR.
+        background=(246, 234, 217),      # #D9EAF6 desktop blue
+        header_bg=(177, 127, 60),        # #3C7FB1 title bar
+        surface=(255, 252, 248),         # bright glass card
+        surface_alt=(252, 242, 230),     # pale blue tint
+        border=(222, 192, 160),          # #A0C0DE glass edge
+        footer_bg=(248, 236, 222),       # #DEECF8 status strip
+        text=(42, 32, 24),
+        text_dim=(140, 122, 104),
+        accent=(190, 124, 54),           # #367CBE selection blue
+        accent_text=(255, 255, 255),
+        success=(70, 150, 45),
+        warning=(0, 140, 210),
+        danger=(45, 45, 195),
+        numeral=(160, 95, 25),
+        msg=(115, 100, 85),
+        option=(140, 70, 90),
+        irq=(150, 50, 140),
+        cursor_style="fill",
+        render_style="aero",
+        header_text=(255, 255, 255),
+        header_text_dim=(255, 238, 218),
+        selection_text=(255, 255, 255),
     ),
     "industrial": MenuTheme(
         id="industrial",

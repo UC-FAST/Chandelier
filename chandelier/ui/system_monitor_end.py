@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import threading
+import time
 
 import cv2
 import numpy as np
@@ -56,7 +57,7 @@ class _PageCursor:
 
 
 class SystemMonitor(ControlledEnd):
-    PAGE_TITLES = ("HARDWARE", "POWER", "NETWORK")
+    PAGE_TITLES = ("HARDWARE", "POWER", "NETWORK", "SERVICE")
     HEADER_HEIGHT = 28
     FOOTER_HEIGHT = 16
     REFRESH_SECONDS = 0.5
@@ -66,9 +67,15 @@ class SystemMonitor(ControlledEnd):
         stats: SystemStats,
         config: AppConfig,
         _id: str = EndId.SYSTEM_MONITOR.value,
+        preview_server=None,
+        localizer=None,
+        camera=None,
     ):
         super().__init__(_id)
         self._stats = stats
+        self._preview_server = preview_server
+        self._localizer = localizer
+        self._camera = camera
         self._width = config.screen.width
         self._height = config.screen.height
         self._renderer = get_renderer()
@@ -78,6 +85,8 @@ class SystemMonitor(ControlledEnd):
         self._label_height = 9
         self._value_height = 10
         self._footer_height_px = 8
+        self._last_generation = -1
+        self._last_generation_at = 0.0
 
     @property
     def _theme(self):
@@ -94,7 +103,18 @@ class SystemMonitor(ControlledEnd):
         return self._report(self._stats.power_report, "Power")
 
     def _network_report(self):
-        return self._report(self._stats.network_report, "Network")
+        report = self._report(self._stats.network_report, "Network")
+        if self._preview_server is not None:
+            server = self._preview_server
+            if server.enabled:
+                value = f"{tr('ON')} :{server.port}"
+                clients = server.client_count
+                if clients:
+                    value += f" {clients}cl"
+            else:
+                value = tr("OFF")
+            report = {**report, "Web {}": value}
+        return report
 
     @staticmethod
     def _report(report, label: str):
@@ -107,13 +127,86 @@ class SystemMonitor(ControlledEnd):
             return {f"{label} {{}}": "unavailable"}
         return data
 
+    def _service_report(self) -> dict:
+        report: dict[str, object] = {}
+
+        localizer = self._localizer
+        if localizer is None:
+            report["Localizer {}"] = "N/A"
+        else:
+            process = getattr(localizer, "process", None)
+            alive = False
+            if process is not None:
+                try:
+                    alive = bool(process.is_alive())
+                except Exception:
+                    alive = False
+            report["Localizer {}"] = "RUNNING" if alive else "STOPPED"
+
+            latest = getattr(localizer, "latest", None)
+            batch = None
+            if latest is not None:
+                try:
+                    batch = latest.read()
+                except Exception:
+                    batch = None
+            if batch is None:
+                report["Sources {}"] = "--"
+                report["Confidence {}"] = "--"
+                report["Last DOA {}"] = "--"
+            else:
+                now = time.monotonic()
+                if batch.generation != self._last_generation:
+                    self._last_generation = batch.generation
+                    self._last_generation_at = now
+                report["Sources {}"] = len(batch.sources)
+                report["Confidence {}"] = f"{batch.confidence:.2f}"
+                age = now - self._last_generation_at
+                report["Last DOA {}"] = f"{age:.1f}s"
+
+        server = self._preview_server
+        if server is None:
+            report["Web {}"] = "N/A"
+        else:
+            report["Web {}"] = (
+                f"{tr('ON')} :{server.port}"
+                if server.enabled
+                else tr("OFF")
+            )
+            report["Clients {}"] = server.client_count
+            if server.enabled:
+                ip = self._ip_address()
+                report["URL {}"] = (
+                    f"http://{ip}:{server.port}"
+                    if ip
+                    else f":{server.port}"
+                )
+
+        if self._camera is not None:
+            report["Camera {}"] = (
+                f"{self._camera.frame_per_second:.0f}fps"
+            )
+        return report
+
+    def _ip_address(self) -> str | None:
+        try:
+            report = self._stats.network_report()
+        except Exception:
+            return None
+        for key, value in report.items():
+            if str(key).startswith("IP"):
+                return str(value) if value else None
+        return None
+
     def _current_report(self) -> dict:
         page = self._decorator.current_page
         if page == 0:
             return self._hardware_report()
         if page == 1:
             return self._power_report()
-        return self._network_report()
+        if page == 2:
+            return self._network_report()
+        return self._service_report()
 
     @staticmethod
     def _rows(report: dict) -> list[tuple[str, str, str]]:
@@ -157,7 +250,7 @@ class SystemMonitor(ControlledEnd):
         theme = self._theme
         label = key.split("{}", 1)[0].strip().lower()
 
-        if label in {"cpu", "mem", "disk"}:
+        if label in {"cpu", "mem", "disk", "swap"}:
             percent = self._percent(value_text)
             if percent is None:
                 return theme.text
@@ -206,11 +299,54 @@ class SystemMonitor(ControlledEnd):
                 return theme.warning
             return theme.danger
 
+        if label.startswith("throttle"):
+            lowered = value_text.lower()
+            if lowered.startswith("ok"):
+                return theme.warning if "!" in lowered else theme.success
+            if lowered.startswith("n/a"):
+                return theme.text_dim
+            return theme.danger
+
+        if label.startswith("localizer"):
+            upper = value_text.upper()
+            if upper.startswith("RUNNING"):
+                return theme.success
+            if upper.startswith("STOPPED"):
+                return theme.danger
+            return theme.text_dim
+
+        if label.startswith("confidence"):
+            confidence = self._number(value_text)
+            if confidence is None:
+                return theme.text
+            if confidence >= 0.5:
+                return theme.success
+            if confidence >= 0.2:
+                return theme.warning
+            return theme.danger
+
+        if label.startswith("last doa"):
+            age = self._number(value_text)
+            if age is None:
+                return theme.text
+            if age <= 5:
+                return theme.success
+            if age <= 30:
+                return theme.warning
+            return theme.danger
+
+        if label.startswith("web") and self._preview_server is not None:
+            return (
+                theme.success
+                if self._preview_server.enabled
+                else theme.danger
+            )
+
         return theme.text
 
     def _bar_percent(self, key: str, value_text: str) -> float | None:
         label = key.split("{}", 1)[0].strip().lower()
-        if label in {"cpu", "mem", "disk", "bat"}:
+        if label in {"cpu", "mem", "disk", "swap", "bat"}:
             return self._percent(value_text)
         return None
 

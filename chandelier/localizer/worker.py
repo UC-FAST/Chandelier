@@ -26,6 +26,8 @@ _FIELD_ORDER = (
     "mic_rotation",
     "delay_max",
     "n_delay_bins",
+    "marker_fov",
+    "marker_azimuth_offset",
 )
 _INTEGER_FIELDS = frozenset({"n_sources", "max_to_cumulate", "n_delay_bins"})
 _LIMITS = {
@@ -35,6 +37,7 @@ _LIMITS = {
     "speech_threshold": (0.0, 1.0),
     "delay_max": (0.0, 64.0),
     "n_delay_bins": (2.0, 512.0),
+    "marker_fov": (1.0, 179.0),
 }
 
 
@@ -53,6 +56,8 @@ class LocalizerSettings:
     mic_rotation: float = 0.0
     delay_max: float = 0.0
     n_delay_bins: int = 50
+    marker_fov: float = 62.0
+    marker_azimuth_offset: float = 0.0
 
     @classmethod
     def from_config(cls, config: LocalizerConfig) -> "LocalizerSettings":
@@ -64,6 +69,8 @@ class LocalizerSettings:
             mic_rotation=config.mic_rotation,
             delay_max=config.delay_max,
             n_delay_bins=config.n_delay_bins,
+            marker_fov=config.marker_fov,
+            marker_azimuth_offset=config.marker_azimuth_offset,
         )
 
 
@@ -121,7 +128,7 @@ class SharedLocalizerSettings:
 
 def _normalize(field: str, value: Any) -> float:
     number = float(value)
-    if field == "mic_rotation":
+    if field in {"mic_rotation", "marker_azimuth_offset"}:
         return number % 360.0
     if field in _INTEGER_FIELDS:
         number = float(round(number))
@@ -283,6 +290,14 @@ def run_worker(
             if not batch.detections or batch.confidence <= threshold:
                 continue
 
+            marker_fov = (
+                current.marker_fov if current is not None else config.marker_fov
+            )
+            marker_azimuth_offset = (
+                current.marker_azimuth_offset
+                if current is not None
+                else config.marker_azimuth_offset
+            )
             sources = []
             for rank, detection in enumerate(batch.detections[:MAX_SOURCES]):
                 screen_x, screen_y = aziel_to_screen_spherical(
@@ -290,6 +305,8 @@ def run_worker(
                     detection.elevation,
                     width=screen_size[0],
                     height=screen_size[1],
+                    fov=marker_fov,
+                    azimuth_offset=marker_azimuth_offset,
                 )
                 sources.append(
                     SourceSnapshot(

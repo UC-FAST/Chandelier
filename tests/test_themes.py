@@ -11,6 +11,7 @@ def test_registry_and_fallback():
         "dark_pro",
         "high_contrast",
         "industrial",
+        "aero",
         "classic",
         "xp_luna",
         "win2000",
@@ -18,6 +19,7 @@ def test_registry_and_fallback():
         "win10",
     }
     assert get_theme("dark_pro").id == "dark_pro"
+    assert get_theme("aero").render_style == "aero"
     assert get_theme("classic").render_style == "classic"
     assert get_theme("xp_luna").render_style == "luna"
     assert get_theme("win2000").render_style == "win2000"

@@ -41,6 +41,8 @@ class SystemStats:
 
     _NETWORK_CACHE_SECONDS = 5.0
     _INTERNET_CACHE_SECONDS = 15.0
+    _CPU_SNAPSHOT_SECONDS = 1.0
+    _THROTTLE_CACHE_SECONDS = 5.0
 
     def __init__(self, battery, power_monitor, rtc, network=None):
         self._battery = battery
@@ -52,6 +54,12 @@ class SystemStats:
         self._internet_connected: bool | None = None
         self._internet_checked_at = 0.0
         self._internet_probe: threading.Thread | None = None
+        self._cpu_snapshot: tuple[float | None, float | None] | None = None
+        self._cpu_snapshot_at = 0.0
+        self._throttle: str | None = None
+        self._throttle_at = 0.0
+        self._net_counters = None
+        self._net_counters_at = 0.0
 
     # ------------------------------------------------------------------
     # Hardware
@@ -96,11 +104,35 @@ class SystemStats:
             logger.debug("disk usage unavailable", exc_info=True)
             disk_percent = None
 
+        try:
+            per_core = psutil.cpu_percent(interval=None, percpu=True)
+            cores = (
+                " ".join(f"{round(value)}" for value in per_core) + "%"
+                if per_core
+                else None
+            )
+        except Exception:
+            logger.debug("per-core CPU usage unavailable", exc_info=True)
+            cores = None
+
+        try:
+            swap_percent = round(psutil.swap_memory().percent, 2)
+        except Exception:
+            logger.debug("swap usage unavailable", exc_info=True)
+            swap_percent = None
+
+        temperature = self._cpu_temperature(psutil)
+        self._cpu_snapshot = (cpu_percent, temperature)
+        self._cpu_snapshot_at = time.monotonic()
+
         report: dict[str, object] = {
             "CPU {}%": cpu_percent,
+            "Cores {}": cores,
             "MEM {}%": memory_percent,
+            "Swap {}%": swap_percent,
             "DISK {}%": disk_percent,
-            "TEMP {} C": self._cpu_temperature(psutil),
+            "TEMP {} C": temperature,
+            "Throttle {}": self._throttle_state(),
         }
 
         frequency = self._cpu_frequency(psutil)
@@ -118,6 +150,76 @@ class SystemStats:
         report["System Time {}"] = datetime.now()
         report["RTC Time {}"] = rtc_time
         return report
+
+    def cpu_snapshot(self) -> tuple[float | None, float | None]:
+        """Return ``(cpu_percent, temperature_c)`` for the status bar.
+
+        The camera calls this every frame, so samples are cached for one
+        second.  ``hardware_report`` refreshes the same cache while the
+        system monitor is open.
+        """
+
+        now = time.monotonic()
+        if (
+            self._cpu_snapshot is not None
+            and now - self._cpu_snapshot_at < self._CPU_SNAPSHOT_SECONDS
+        ):
+            return self._cpu_snapshot
+
+        try:
+            import psutil
+        except ImportError:  # pragma: no cover - psutil is a requirement
+            logger.warning("psutil is not installed")
+            return (None, None)
+
+        try:
+            cpu_percent = round(psutil.cpu_percent(interval=None), 1)
+        except Exception:
+            logger.debug("CPU usage unavailable", exc_info=True)
+            cpu_percent = None
+        temperature = self._cpu_temperature(psutil)
+
+        self._cpu_snapshot = (cpu_percent, temperature)
+        self._cpu_snapshot_at = now
+        return self._cpu_snapshot
+
+    def _throttle_state(self) -> str:
+        """Summarise ``vcgencmd get_throttled`` flags (cached)."""
+
+        now = time.monotonic()
+        if (
+            self._throttle is not None
+            and now - self._throttle_at < self._THROTTLE_CACHE_SECONDS
+        ):
+            return self._throttle
+
+        output = self._run(["vcgencmd", "get_throttled"])
+        match = re.search(r"throttled=(0x[0-9a-fA-F]+)", output or "")
+        state = (
+            self._format_throttle(int(match.group(1), 16))
+            if match
+            else "N/A"
+        )
+        self._throttle = state
+        self._throttle_at = now
+        return state
+
+    @staticmethod
+    def _format_throttle(flags: int) -> str:
+        labels = []
+        if flags & 0x1:
+            labels.append("UV")
+        if flags & 0x2:
+            labels.append("FREQ")
+        if flags & 0x4:
+            labels.append("THROT")
+        if flags & 0x8:
+            labels.append("TEMP")
+        if not labels:
+            labels.append("OK")
+        if flags & 0xF0000:
+            labels.append("!")
+        return " ".join(labels)
 
     @staticmethod
     def _cpu_temperature(psutil) -> float | None:
@@ -260,6 +362,7 @@ class SystemStats:
                     "Frequency {}": None,
                     "Link Quality {}": None,
                     "Signal Level {}": None,
+                    "RX/TX {}": None,
                 }
             self._network_cache = report
             self._network_cached_at = now
@@ -284,7 +387,38 @@ class SystemStats:
             "Frequency {}": frequency,
             "Link Quality {}": quality,
             "Signal Level {}": level,
+            "RX/TX {}": self._network_throughput(),
         }
+
+    def _network_throughput(self) -> str | None:
+        """Return ``RX/TX`` KiB/s since the previous network sample."""
+
+        try:
+            import psutil
+
+            counters = psutil.net_io_counters()
+        except Exception:
+            return None
+
+        now = time.monotonic()
+        previous = self._net_counters
+        elapsed = now - self._net_counters_at
+        self._net_counters = counters
+        self._net_counters_at = now
+        if previous is None or elapsed <= 0:
+            return None
+
+        receive = (
+            max(0, counters.bytes_recv - previous.bytes_recv)
+            / elapsed
+            / 1024
+        )
+        transmit = (
+            max(0, counters.bytes_sent - previous.bytes_sent)
+            / elapsed
+            / 1024
+        )
+        return f"{receive:.0f}K/{transmit:.0f}K"
 
     def _wireless_info(
         self,

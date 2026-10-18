@@ -62,7 +62,7 @@ class MenuOptionId(str, Enum):
     SHOW_CENTER = "show_center"
     SHOW_ZEBRA = "show_zebra"
     ZEBRA_THRESHOLD = "zebra_threshold"
-    SHOW_STATUS_BAR = "show_status_bar"
+    STATUS_BAR_POSITION = "status_bar_position"
 
     # Capture modes
     CAPTURE = "capture"
@@ -99,6 +99,7 @@ class MenuOptionId(str, Enum):
     # System
     SYSTEM = "system"
     LANGUAGE = "language"
+    WEB_SERVER = "web_server"
     REBOOT = "reboot"
 
     # Sound localizer
@@ -110,6 +111,8 @@ class MenuOptionId(str, Enum):
     LOC_MIC_ROTATION = "loc_mic_rotation"
     LOC_DELAY_MAX = "loc_delay_max"
     LOC_DELAY_BINS = "loc_delay_bins"
+    LOC_MARKER_FOV = "loc_marker_fov"
+    LOC_MARKER_AZIMUTH = "loc_marker_azimuth"
 
     # Gallery player
     PLAYER = "player"

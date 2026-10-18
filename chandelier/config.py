@@ -115,6 +115,8 @@ class LocalizerConfig:
     delay_max: float = 0.0
     n_delay_bins: int = 50
     mic_rotation: float = 0.0
+    marker_fov: float = 62.0
+    marker_azimuth_offset: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -248,6 +250,15 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
 
     localizer_raw = raw.get("localizer", {})
     silero_dir = localizer_raw.get("silero_model_dir")
+    marker_fov = float(localizer_raw.get("marker_fov", 62.0))
+    if not 0.0 < marker_fov < 180.0:
+        raise ConfigError(
+            "localizer.marker_fov must be between 0 and 180 degrees, "
+            f"got {localizer_raw.get('marker_fov')!r}"
+        )
+    marker_azimuth_offset = float(
+        localizer_raw.get("marker_azimuth_offset", 0.0)
+    ) % 360.0
     localizer = LocalizerConfig(
         device=localizer_raw.get("device", 0),
         rate=int(localizer_raw.get("rate", 16000)),
@@ -266,6 +277,8 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
         delay_max=float(localizer_raw.get("delay_max", 0.0)),
         n_delay_bins=int(localizer_raw.get("n_delay_bins", 50)),
         mic_rotation=float(localizer_raw.get("mic_rotation", 0.0)),
+        marker_fov=marker_fov,
+        marker_azimuth_offset=marker_azimuth_offset,
     )
 
     marker_raw = raw.get("marker", {})

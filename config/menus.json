@@ -266,7 +266,7 @@
                     "id": "show_hist",
                     "content": "Show Histogram",
                     "type": "bool",
-                    "value": true
+                    "value": false
                 },
                 {
                     "id": "exposure_time",
@@ -677,11 +677,32 @@
                     "step": 5
                 },
                 {
-                    "id": "show_status_bar",
+                    "id": "status_bar_position",
                     "content": "Status Bar",
-                    "type": "bool",
+                    "type": "option",
                     "icon": "monitor",
-                    "value": true
+                    "value": {
+                        "content": "Top",
+                        "value": "top"
+                    },
+                    "options": [
+                        {
+                            "content": "Off",
+                            "value": "off"
+                        },
+                        {
+                            "content": "Top",
+                            "value": "top"
+                        },
+                        {
+                            "content": "Bottom",
+                            "value": "bottom"
+                        },
+                        {
+                            "content": "Sides",
+                            "value": "sides"
+                        }
+                    ]
                 }
             ]
         },
@@ -881,7 +902,7 @@
                     "content": "Sources",
                     "type": "numeral",
                     "icon": "sliders",
-                    "value": 2,
+                    "value": 1,
                     "min": 1,
                     "max": 8,
                     "step": 1
@@ -905,6 +926,36 @@
                     "min": 0,
                     "max": 359,
                     "step": 1,
+                    "format": "degrees"
+                },
+                {
+                    "id": "loc_marker_fov",
+                    "content": "Camera FOV",
+                    "type": "numeral",
+                    "icon": "focus",
+                    "value": 63,
+                    "min": 1,
+                    "max": 179,
+                    "step": 1,
+                    "step_options": [
+                        1,
+                        5
+                    ],
+                    "format": "degrees"
+                },
+                {
+                    "id": "loc_marker_azimuth",
+                    "content": "Marker Yaw",
+                    "type": "numeral",
+                    "icon": "focus",
+                    "value": 0,
+                    "min": 0,
+                    "max": 359,
+                    "step": 1,
+                    "step_options": [
+                        1,
+                        10
+                    ],
                     "format": "degrees"
                 },
                 {
@@ -958,8 +1009,8 @@
                     "type": "option",
                     "icon": "display",
                     "value": {
-                        "content": "English",
-                        "value": "en"
+                        "content": "简体中文",
+                        "value": "zh_CN"
                     },
                     "options": [
                         {
@@ -986,8 +1037,8 @@
                     "type": "option",
                     "icon": "theme",
                     "value": {
-                        "content": "Windows 2000",
-                        "value": "win2000"
+                        "content": "Dark Pro",
+                        "value": "dark_pro"
                     },
                     "options": [
                         {
@@ -1019,10 +1070,22 @@
                             "value": "win7"
                         },
                         {
+                            "content": "Aero",
+                            "value": "aero"
+                        },
+                        {
                             "content": "Windows 10",
                             "value": "win10"
                         }
                     ]
+                },
+                {
+                    "id": "web_server",
+                    "content": "Web Server",
+                    "type": "bool",
+                    "icon": "monitor",
+                    "receiver": "camera",
+                    "value": true
                 },
                 {
                     "id": "power",
@@ -1031,8 +1094,8 @@
                     "icon": "power",
                     "receiver": "controller",
                     "value": {
-                        "content": "Shutdown",
-                        "value": "shutdown"
+                        "content": "Reboot",
+                        "value": "reboot"
                     },
                     "options": [
                         {

@@ -50,13 +50,19 @@ class StatusBar:
         self._height = height
         self._font_height = font_height
         self._renderer = get_renderer()
-        self._position = "bottom" if position == "bottom" else "top"
+        self._position = "top"
+        self.set_position(position)
         self._alpha = max(0.0, min(1.0, float(alpha)))
         self._items: list[_Item] = []
 
     @property
     def items(self) -> list[str]:
         return [item.text for item in self._items]
+
+    def set_position(self, position: str) -> None:
+        self._position = (
+            position if position in {"top", "bottom", "sides"} else "top"
+        )
 
     def set_items(self, items: list) -> None:
         parsed: list[_Item] = []
@@ -97,7 +103,7 @@ class StatusBar:
         items = list(self._items)
         widths = [self._text_width(item.text) for item in items]
         available = max(1, width - 14)
-        gap = 8
+        gap = 6
 
         while (
             len(items) > 1
@@ -128,6 +134,87 @@ class StatusBar:
     # ------------------------------------------------------------------
     # Drawing
     # ------------------------------------------------------------------
+    def _decorate_sides(self, frame, theme) -> None:
+        """Draw the items as two vertical columns on the screen edges."""
+
+        frame_height, frame_width = frame.shape[:2]
+        width = min(self._width, frame_width)
+        font_height = self._font_height
+        line_gap = max(2, font_height // 3)
+        padding = 5
+        max_text_width = max(20, width // 3 - 12)
+
+        items = [
+            _Item(self._fit(item.text, max_text_width), item.role)
+            for item in self._items
+        ]
+        split = (len(items) + 1) // 2
+        columns = [items[:split], items[split:]]
+
+        def column_height(column):
+            if not column:
+                return 0
+            return (
+                len(column) * font_height
+                + (len(column) - 1) * line_gap
+            )
+
+        while (
+            max(column_height(columns[0]), column_height(columns[1])) + 12
+            > frame_height
+        ):
+            longer = 0 if len(columns[0]) >= len(columns[1]) else 1
+            if not columns[longer]:
+                break
+            columns[longer].pop()
+
+        for side, column in enumerate(columns):
+            if not column:
+                continue
+            text_width = max(self._text_width(item.text) for item in column)
+            panel_width = min(width // 2 - 4, text_width + 2 * padding)
+            panel_width = max(panel_width, font_height + 2 * padding)
+            panel_height = column_height(column) + 2 * padding
+            y0 = max(0, (frame_height - panel_height) // 2)
+            y1 = min(frame_height, y0 + panel_height)
+            if side == 0:
+                x0, x1 = 0, panel_width
+            else:
+                x0, x1 = width - panel_width, width
+
+            region = frame[y0:y1, x0:x1]
+            surface = np.empty_like(region)
+            color = theme.header_bg
+            if region.shape[2] == 4:
+                color = (*color, 255)
+            surface[:] = color
+            cv2.addWeighted(
+                surface, self._alpha, region, 1.0 - self._alpha, 0, region
+            )
+
+            accent_x = x1 - 1 if side == 0 else x0
+            cv2.line(
+                frame,
+                (accent_x, y0),
+                (accent_x, y1 - 1),
+                theme.accent,
+                2,
+                cv2.LINE_AA,
+            )
+
+            baseline = y0 + padding + font_height
+            for item in column:
+                item_width = self._text_width(item.text)
+                self._renderer.draw(
+                    frame,
+                    item.text,
+                    (x0 + (panel_width - item_width) // 2, baseline),
+                    font_height,
+                    self._role_color(theme, item.role),
+                    1,
+                )
+                baseline += font_height + line_gap
+
     def decorate(self, frame, theme_id: str = "dark_pro") -> None:
         if not self._items or frame is None or frame.size == 0:
             return
@@ -137,6 +224,9 @@ class StatusBar:
         theme = get_theme(theme_id)
         frame_height, frame_width = frame.shape[:2]
         width = min(self._width, frame_width)
+        if self._position == "sides":
+            self._decorate_sides(frame, theme)
+            return
         bar_height = max(20, self._font_height + 12)
         if self._position == "bottom":
             y0 = max(0, frame_height - bar_height)

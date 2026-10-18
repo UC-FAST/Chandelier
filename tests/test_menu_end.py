@@ -455,6 +455,7 @@ def test_all_themes_and_edit_views_render(tmp_path):
         "dark_pro",
         "high_contrast",
         "industrial",
+        "aero",
         "classic",
         "xp_luna",
         "win2000",

@@ -61,7 +61,9 @@
         "silero_model_dir": null,
         "delay_max": 0.0,
         "n_delay_bins": 50,
-        "mic_rotation": 0.0
+        "mic_rotation": 0.0,
+        "marker_fov": 62.0,
+        "marker_azimuth_offset": 0.0
     },
     "marker": {
         "mode": "single",

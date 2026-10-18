@@ -43,6 +43,8 @@ _LOCALIZER_OPTIONS = (
     (MenuOptionId.LOC_MIC_ROTATION.value, "mic_rotation", float),
     (MenuOptionId.LOC_DELAY_MAX.value, "delay_max", float),
     (MenuOptionId.LOC_DELAY_BINS.value, "n_delay_bins", int),
+    (MenuOptionId.LOC_MARKER_FOV.value, "marker_fov", float),
+    (MenuOptionId.LOC_MARKER_AZIMUTH.value, "marker_azimuth_offset", float),
 )
 
 
@@ -63,7 +65,7 @@ class CameraState:
     show_center: bool = False
     show_zebra: bool = False
     zebra_threshold: int = 235
-    show_status_bar: bool = False
+    status_position: str = "off"
     menu_theme: str = "dark_pro"
 
     # Capture / recording modes
@@ -104,12 +106,16 @@ class CameraControlledEnd(ControlledEnd):
         _id: str = EndId.CAMERA.value,
         verbose_console: int = logging.INFO,
         localizer=None,
+        preview_server=None,
+        stats=None,
     ):
         super().__init__(_id)
         self._camera = camera
         self._leds = leds
         self._config = config
         self._screen = config.screen
+        self._preview_server = preview_server
+        self._stats = stats
         self._state = CameraState()
         self._menu_tree: dict | None = None
         self._localizer = localizer
@@ -511,6 +517,27 @@ class CameraControlledEnd(ControlledEnd):
         if self._state.awb_lock:
             self._camera.set_awb_lock(True)
 
+    def _apply_preview_server(self, value=None) -> None:
+        """Start or stop the HTTP preview server from the System menu."""
+
+        if self._preview_server is None:
+            return
+        try:
+            enabled = (
+                bool(
+                    self._option_value_or(
+                        MenuOptionId.WEB_SERVER.value, True
+                    )
+                )
+                if value is None
+                else bool(value)
+            )
+            self._preview_server.set_enabled(enabled)
+        except Exception:
+            self._logger.exception(
+                "failed to apply preview server setting"
+            )
+
     def _apply_localizer_settings(self) -> None:
         """Forward the localizer menu page to the worker process.
 
@@ -552,8 +579,10 @@ class CameraControlledEnd(ControlledEnd):
             self._option_value_or(MenuOptionId.ZEBRA_THRESHOLD.value, 235)
         )
         self._zebra.set_threshold(state.zebra_threshold)
-        state.show_status_bar = bool(
-            self._option_value_or(MenuOptionId.SHOW_STATUS_BAR.value, False)
+        state.status_position = str(
+            self._option_value_or(
+                MenuOptionId.STATUS_BAR_POSITION.value, "off"
+            )
         )
         state.menu_theme = str(
             self._option_value_or(MenuOptionId.THEME.value, "dark_pro")
@@ -658,11 +687,15 @@ class CameraControlledEnd(ControlledEnd):
         self._apply_manual_controls()
         self._apply_focus()
         self._apply_localizer_settings()
+        self._apply_preview_server()
 
     # ------------------------------------------------------------------
     # Messages and lifecycle
     # ------------------------------------------------------------------
     def msg_receiver(self, sender: str, payload) -> None:
+        if isinstance(payload, bool):
+            self._apply_preview_server(payload)
+            return
         action = None
         if isinstance(payload, (tuple, list)) and len(payload) > 1:
             action, menu_tree = payload[0], payload[1]
@@ -723,7 +756,30 @@ class CameraControlledEnd(ControlledEnd):
             items.append((f"G{float(metadata['AnalogueGain']):.1f}", "text"))
         if metadata.get("ColourTemperature") is not None:
             items.append((f"{int(metadata['ColourTemperature'])}K", "text"))
-        items.append((f"{self._camera.frame_per_second:.0f}fps", "dim"))
+        if self._stats is not None:
+            try:
+                cpu, temperature = self._stats.cpu_snapshot()
+            except Exception:
+                cpu = temperature = None
+            if cpu is not None:
+                role = (
+                    "success"
+                    if cpu < 60
+                    else "warning"
+                    if cpu < 85
+                    else "danger"
+                )
+                items.append((f"CPU{cpu:.0f}%", role))
+            if temperature is not None:
+                role = (
+                    "success"
+                    if temperature < 60
+                    else "warning"
+                    if temperature < 75
+                    else "danger"
+                )
+                items.append((f"T{temperature:.0f}C", role))
+        items.append((f"{self._camera.frame_per_second:.0f}fps", "text"))
         items.append((f"Z{self._state.zoom:.1f}", "text"))
         if abs(self._state.exp_compensation) > 1e-6:
             items.append(
@@ -779,7 +835,8 @@ class CameraControlledEnd(ControlledEnd):
             if self._state.is_busy:
                 self._busy.decorate(frame)
 
-            if self._state.show_status_bar:
+            if self._state.status_position in {"top", "bottom", "sides"}:
+                self._status.set_position(self._state.status_position)
                 self._status.set_items(self._status_items())
                 self._status.decorate(
                     frame, theme_id=self._state.menu_theme

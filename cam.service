@@ -1,14 +1,26 @@
 [Unit]
-Description=Start Camera After Power On
+Description=Chandelier camera terminal
 After=network.target
-
+# The app keeps running if the network is not up yet; network/NTP probes are
+# best-effort and never block the render loop.
+StartLimitIntervalSec=0
 
 [Service]
-WorkingDirectory=/home/pi/chandelier/
-Type=forking
+Type=simple
 User=pi
-ExecStart=python3 startup.py
-TimeoutSec=0
+Group=pi
+WorkingDirectory=/home/pi/chandelier-deepseek
+ExecStart=/usr/bin/python3 /home/pi/chandelier-deepseek/startup.py
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME=/home/pi
+# The pi user's own group membership provides video/gpio/spi/i2c access.
+Restart=always
+RestartSec=2
+SyslogIdentifier=chandelier
+StandardOutput=journal
+StandardError=journal
+KillSignal=SIGTERM
+TimeoutStopSec=10
 
 [Install]
 WantedBy=multi-user.target

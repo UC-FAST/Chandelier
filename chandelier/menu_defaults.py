@@ -18,6 +18,7 @@ THEME_CHOICES = [
     {"content": "Windows XP", "value": "xp_luna"},
     {"content": "Windows 2000", "value": "win2000"},
     {"content": "Windows 7", "value": "win7"},
+    {"content": "Aero", "value": "aero"},
     {"content": "Windows 10", "value": "win10"},
 ]
 
@@ -58,11 +59,17 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "step": 5,
                 },
                 {
-                    "id": "show_status_bar",
+                    "id": "status_bar_position",
                     "content": "Status Bar",
-                    "type": "bool",
+                    "type": "option",
                     "icon": "monitor",
-                    "value": False,
+                    "value": {"content": "Off", "value": "off"},
+                    "options": [
+                        {"content": "Off", "value": "off"},
+                        {"content": "Top", "value": "top"},
+                        {"content": "Bottom", "value": "bottom"},
+                        {"content": "Sides", "value": "sides"},
+                    ],
                 },
             ],
         },
@@ -336,6 +343,30 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "format": "degrees",
                 },
                 {
+                    "id": "loc_marker_fov",
+                    "content": "Camera FOV",
+                    "type": "numeral",
+                    "icon": "focus",
+                    "value": 62,
+                    "min": 1,
+                    "max": 179,
+                    "step": 1,
+                    "step_options": [1, 5],
+                    "format": "degrees",
+                },
+                {
+                    "id": "loc_marker_azimuth",
+                    "content": "Marker Yaw",
+                    "type": "numeral",
+                    "icon": "focus",
+                    "value": 0,
+                    "min": 0,
+                    "max": 359,
+                    "step": 1,
+                    "step_options": [1, 10],
+                    "format": "degrees",
+                },
+                {
                     "id": "loc_delay_max",
                     "content": "Delay Max",
                     "type": "numeral",
@@ -380,6 +411,14 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "icon": "theme",
                     "value": {"content": "Dark Pro", "value": "dark_pro"},
                     "options": copy.deepcopy(THEME_CHOICES),
+                },
+                {
+                    "id": "web_server",
+                    "content": "Web Server",
+                    "type": "bool",
+                    "icon": "monitor",
+                    "receiver": "camera",
+                    "value": True,
                 },
                 {
                     "id": "power",
@@ -503,7 +542,7 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
             "show_center",
             "show_zebra",
             "zebra_threshold",
-            "show_status_bar",
+            "status_bar_position",
         ],
         "capture": [
             "capture_mode",
@@ -525,12 +564,14 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
             "loc_n_sources",
             "loc_confidence",
             "loc_mic_rotation",
+            "loc_marker_fov",
+            "loc_marker_azimuth",
             "loc_speech_threshold",
             "loc_max_chunks",
             "loc_delay_max",
             "loc_delay_bins",
         ],
-        "system": ["language", "theme", "power"],
+        "system": ["language", "theme", "web_server", "power"],
     },
     "gallery": {
         "0": ["player", "show_hist", "delete"],
@@ -747,6 +788,93 @@ def _migrate_power_option(tree: dict[str, Any]) -> bool:
     return changed
 
 
+def _status_bar_default() -> dict[str, Any]:
+    return next(
+        option
+        for option in DEFAULT_SECTIONS["camera"]["display"]["options"]
+        if option["id"] == "status_bar_position"
+    )
+
+
+def _migrate_status_bar_option(tree: dict[str, Any]) -> bool:
+    """Merge the legacy ``show_status_bar`` bool into the position option."""
+
+    changed = False
+    default = _status_bar_default()
+    valid = {"off", "top", "bottom", "sides"}
+
+    for group in tree.values():
+        if not isinstance(group, dict):
+            continue
+        for section in group.values():
+            if not isinstance(section, dict):
+                continue
+            options = section.get("options")
+            if not isinstance(options, list):
+                continue
+
+            show = next(
+                (
+                    option
+                    for option in options
+                    if isinstance(option, dict)
+                    and option.get("id") == "show_status_bar"
+                ),
+                None,
+            )
+            position = next(
+                (
+                    option
+                    for option in options
+                    if isinstance(option, dict)
+                    and option.get("id") == "status_bar_position"
+                ),
+                None,
+            )
+            if show is None and position is None:
+                continue
+
+            before = copy.deepcopy(options)
+
+            value = None
+            if position is not None:
+                raw = position.get("value")
+                if isinstance(raw, dict):
+                    raw = raw.get("value")
+                if raw in valid:
+                    value = raw
+            if show is not None:
+                if not bool(show.get("value")):
+                    value = "off"
+                elif value in {None, "off"}:
+                    value = "top"
+            if value is None:
+                value = "off"
+
+            if position is None:
+                position = copy.deepcopy(default)
+                options.append(position)
+            position["content"] = "Status Bar"
+            position["type"] = "option"
+            position["icon"] = "monitor"
+            position["options"] = copy.deepcopy(default["options"])
+            position.pop("enable_if", None)
+            position.pop("enable", None)
+            label = next(
+                choice["content"]
+                for choice in default["options"]
+                if choice["value"] == value
+            )
+            position["value"] = {"content": label, "value": value}
+
+            if show is not None:
+                options.remove(show)
+
+            if options != before:
+                changed = True
+    return changed
+
+
 def _ensure_theme_choices(tree: dict[str, Any]) -> bool:
     """Add newly introduced theme choices without overwriting an old value."""
 
@@ -873,6 +1001,7 @@ def ensure_menu_defaults(tree: dict[str, Any]) -> bool:
 
     changed |= _migrate_focus_mode(tree)
     changed |= _migrate_power_option(tree)
+    changed |= _migrate_status_bar_option(tree)
 
     for group_name, sections in DEFAULT_SECTIONS.items():
         group = tree.get(group_name)

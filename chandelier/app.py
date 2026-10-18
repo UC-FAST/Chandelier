@@ -19,12 +19,33 @@ from chandelier.ui import (
 logger = logging.getLogger(__name__)
 
 
-def build_ends(config: AppConfig, camera, leds, library, stats, localizer=None):
+def build_ends(
+    config: AppConfig,
+    camera,
+    leds,
+    library,
+    stats,
+    localizer=None,
+    preview_server=None,
+):
     """Build the four screens in their original order."""
 
     return [
-        CameraControlledEnd(camera, leds, config, localizer=localizer),
-        SystemMonitor(stats, config),
+        CameraControlledEnd(
+            camera,
+            leds,
+            config,
+            localizer=localizer,
+            preview_server=preview_server,
+            stats=stats,
+        ),
+        SystemMonitor(
+            stats,
+            config,
+            preview_server=preview_server,
+            localizer=localizer,
+            camera=camera,
+        ),
         MenuControlledEnd(
             path=config.menus_file,
             width=config.screen.width,
@@ -77,6 +98,7 @@ def main(argv: list[str] | None = None) -> int:
         from chandelier.hardware.sensors.ina230 import INA230
         from chandelier.hardware.sensors.max17048 import MAX17048
         from chandelier.services.network import Network
+        from chandelier.services.preview_server import PreviewServer
         from chandelier.services.system_stats import SystemStats
         from chandelier.services.time_sync import SystemTimeManager
 
@@ -111,8 +133,23 @@ def main(argv: list[str] | None = None) -> int:
         network = Network(config.internet_test_url)
         stats = SystemStats(battery, power_monitor, rtc, network)
 
-        ends = build_ends(config, camera, leds, library, stats, localizer)
-        controller = Controller(display, ends, config, argv)
+        preview_server = PreviewServer()
+        closeables.append(preview_server.stop)
+
+        ends = build_ends(
+            config,
+            camera,
+            leds,
+            library,
+            stats,
+            localizer=localizer,
+            preview_server=preview_server,
+        )
+        controller = Controller(
+            display, ends, config, argv, preview_server=preview_server
+        )
+        preview_server.set_action_handler(controller.handle_action)
+        preview_server.set_screen_handler(controller.switch_to)
         input_panel = GpioInputPanel(config.pin, controller.handle_action)
         closeables.append(input_panel.close)
 

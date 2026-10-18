@@ -64,7 +64,8 @@ def config_file(tmp_path: Path) -> Path:
                 "n_sources": 3, "confidence_threshold": 0.03,
                 "max_to_cumulate": 5, "speech_threshold": 0.0,
                 "silero_model_dir": null, "delay_max": 0.0,
-                "n_delay_bins": 50, "mic_rotation": 0.0
+                "n_delay_bins": 50, "mic_rotation": 0.0,
+                "marker_fov": 62.0, "marker_azimuth_offset": 0.0
             },
             "marker": {
                 "mode": "single", "max_sources": 3, "ttl": 3.0,

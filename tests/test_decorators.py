@@ -98,11 +98,27 @@ def test_marker_box_uses_median_and_expires():
     assert not stale.any()
 
 
-def test_marker_box_clamps_to_frame_edges():
+def test_marker_box_draws_edge_arrow_for_offscreen_source():
     marker = MarkerBox(width=320, height=240, size=(24, 24), ttl=2.0)
     frame = _frame()
-    marker.decorate(frame, (-20, -20), "AZ 0 EL 0", timestamp=0.0)
-    assert frame.any()
+    marker.decorate(frame, (-40, 120), "", timestamp=0.0)
+
+    # Track 0 is red; the arrow points left from the left screen edge.
+    blue, green, red = (int(value) for value in frame[120, 12])
+    assert red > 150 and blue < 80 and green < 80
+    # No box is drawn at the centre for an off-screen source.
+    assert not frame[120, 160].any()
+
+
+def test_marker_box_draws_arrow_at_frame_border():
+    marker = MarkerBox(width=320, height=240, size=(24, 24), ttl=2.0)
+    marker.update(0, (320, 120), "", timestamp=0.0)
+
+    frame = _frame()
+    marker.decorate(frame, timestamp=0.0)
+
+    blue, green, red = (int(value) for value in frame[120, 307])
+    assert red > 150 and blue < 80 and green < 80
 
 
 def test_warning_does_not_accumulate_text():
@@ -284,3 +300,50 @@ def test_player_hud():
     hud.decorate(frame)
     assert hud.visible is True
     assert frame[240 - 24 :, :].any()
+
+
+def test_status_bar_keeps_typical_camera_items():
+    from chandelier.ui.decorators import StatusBar
+
+    bar = StatusBar(320, 240, font_height=10)
+    bar.set_items(
+        ["SGL", "AF-C", "1/100", "G1.5", "5000K", "CPU85%", "T65C",
+         "30fps", "Z1.0"]
+    )
+    assert len(bar._layout(320)) == 9
+
+
+def test_status_bar_sides_render_in_two_columns():
+    from chandelier.ui.decorators import StatusBar
+
+    frame = _frame()
+    bar = StatusBar(320, 240, font_height=10)
+    bar.set_position("sides")
+    bar.set_items(
+        [
+            ("SGL", "success"),
+            ("AF-C", "success"),
+            ("1/100", "text"),
+            ("G1.5", "text"),
+            ("CPU23%", "success"),
+            ("T45C", "success"),
+            ("30fps", "text"),
+            ("Z1.0", "text"),
+        ]
+    )
+    bar.decorate(frame, theme_id="dark_pro")
+
+    assert frame[:, :40].any()       # left column
+    assert frame[:, -40:].any()      # right column
+    assert not frame[120, 160].any()  # centre stays untouched
+
+
+def test_status_bar_position_falls_back_to_top():
+    from chandelier.ui.decorators import StatusBar
+
+    bar = StatusBar(320, 240)
+    bar.set_position("invalid")
+    bar.set_items(["SGL"])
+    frame = _frame()
+    bar.decorate(frame, theme_id="dark_pro")
+    assert frame[:18, :].any()

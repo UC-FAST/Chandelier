@@ -1,5 +1,7 @@
 """Tests for the redesigned system monitor screen."""
 
+import types
+
 import numpy as np
 import pytest
 
@@ -25,8 +27,10 @@ def test_monitor_renders_and_navigates_pages():
 
     monitor.down_press_action()
     monitor.down_press_action()
-    assert monitor.current_page == 2
-    assert monitor.total_pages == 3
+    assert monitor.current_page == 3
+    assert monitor.total_pages == 4
+    monitor.down_press_action()
+    assert monitor.current_page == 3
 
     monitor.up_release_action()
     monitor.up_release_action()
@@ -69,6 +73,87 @@ def test_monitor_survives_failing_reports():
     for _ in range(3):
         assert monitor._compose_frame().any()
         monitor.down_press_action()
+
+
+def test_monitor_shows_preview_server_status():
+    class FakePreviewServer:
+        def __init__(self, enabled, clients=0):
+            self.enabled = enabled
+            self.port = 5989
+            self.client_count = clients
+
+    config = load_config()
+    running = SystemMonitor(
+        FakeStats(),
+        config,
+        preview_server=FakePreviewServer(True, clients=2),
+    )
+    assert running._network_report()["Web {}"] == "ON :5989 2cl"
+
+    stopped = SystemMonitor(
+        FakeStats(),
+        config,
+        preview_server=FakePreviewServer(False),
+    )
+    assert stopped._network_report()["Web {}"] == "OFF"
+
+
+def test_monitor_service_page_reports_components():
+    class Process:
+        def is_alive(self):
+            return True
+
+    class Latest:
+        def read(self):
+            return types.SimpleNamespace(
+                generation=1,
+                confidence=0.75,
+                sources=[1, 2],
+            )
+
+    class Localizer:
+        process = Process()
+        latest = Latest()
+
+    class PreviewServer:
+        enabled = True
+        port = 5989
+        client_count = 2
+
+    class Camera:
+        frame_per_second = 30.0
+
+    monitor = SystemMonitor(
+        FakeStats(),
+        load_config(),
+        preview_server=PreviewServer(),
+        localizer=Localizer(),
+        camera=Camera(),
+    )
+    report = monitor._service_report()
+
+    assert report["Localizer {}"] == "RUNNING"
+    assert report["Sources {}"] == 2
+    assert report["Confidence {}"] == "0.75"
+    assert report["Last DOA {}"].endswith("s")
+    assert report["Web {}"] == "ON :5989"
+    assert report["Clients {}"] == 2
+    assert report["URL {}"] == "http://127.0.0.1:5989"
+    assert report["Camera {}"] == "30fps"
+
+
+def test_monitor_service_colours():
+    monitor = _monitor()
+    theme = monitor._theme
+    assert monitor._value_color("Throttle {}", "OK") == theme.success
+    assert monitor._value_color("Throttle {}", "UV") == theme.danger
+    assert monitor._value_color("Localizer {}", "RUNNING") == theme.success
+    assert monitor._value_color("Localizer {}", "STOPPED") == theme.danger
+    assert monitor._value_color("Last DOA {}", "1.0s") == theme.success
+    assert monitor._value_color("Last DOA {}", "60.0s") == theme.danger
+    assert monitor._value_color("Confidence {}", "0.75") == theme.success
+    assert monitor._value_color("Confidence {}", "0.05") == theme.danger
+    assert monitor._value_color("Swap {}%", "90%") == theme.danger
 
 
 def test_monitor_rows_parse_label_value_and_units():

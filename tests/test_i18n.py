@@ -43,6 +43,58 @@ def test_translations_cover_main_menus():
     assert tr("Reboot System") == "Перезагрузить систему"
 
 
+def test_new_settings_have_translations():
+    expected = {
+        "zh_CN": (
+            "Web 服务器",
+            "状态栏位置",
+            "相机视场角",
+            "标记偏航",
+            "两侧",
+        ),
+        "zh_TW": (
+            "Web 伺服器",
+            "狀態列位置",
+            "相機視場角",
+            "標記偏航",
+            "兩側",
+        ),
+        "ru": (
+            "Веб-сервер",
+            "Положение панели",
+            "Угол обзора",
+            "Поворот метки",
+            "По бокам",
+        ),
+    }
+    keys = ("Web Server", "Bar Position", "Camera FOV", "Marker Yaw", "Sides")
+    for language, values in expected.items():
+        translator.set_language(language)
+        assert tuple(tr(key) for key in keys) == values
+
+
+def test_monitor_web_status_translations():
+    translator.set_language("zh_CN")
+    assert tr("Web") == "网页"
+    assert tr("ON") == "开"
+    assert tr("OFF") == "关"
+    assert tr("SERVICE") == "服务"
+    assert tr("Throttle") == "降频"
+    assert tr("Last DOA") == "最近定位"
+
+
+def test_web_page_follows_the_active_language():
+    from chandelier.services.preview_server import _index_html
+
+    translator.set_language("zh_CN")
+    html = _index_html().decode("utf-8")
+    assert 'lang="zh_CN"' in html
+    assert ">相机<" in html
+    assert ">菜单<" in html
+    assert 'alt="实时画面"' in html
+    assert "快照" in html
+
+
 def test_language_from_options():
     tree = {
         "camera": {
