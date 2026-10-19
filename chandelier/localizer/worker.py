@@ -19,8 +19,11 @@ from chandelier.common.geometry import (
 )
 from chandelier.config import LocalizerConfig
 
+# Fixed capacity of the shared snapshot; the UI never allocates per read.
 MAX_SOURCES = 8
 
+# Layout of the shared double array.  Keep in sync with LocalizerSettings:
+# values are packed positionally, not by name.
 _FIELD_ORDER = (
     "n_sources",
     "confidence_threshold",
@@ -40,6 +43,9 @@ _FIELD_ORDER = (
     "marker_source_distance",
 )
 _INTEGER_FIELDS = frozenset({"n_sources", "max_to_cumulate", "n_delay_bins"})
+# Numeric bounds applied to values arriving from the UI.  Angles that are
+# wrapped (mic_rotation, marker_azimuth_offset) are handled in _normalize
+# instead of being clamped.
 _LIMITS = {
     "n_sources": (1.0, float(MAX_SOURCES)),
     "confidence_threshold": (0.0, 1.0),
@@ -85,6 +91,8 @@ class LocalizerSettings:
 
     @classmethod
     def from_config(cls, config: LocalizerConfig) -> "LocalizerSettings":
+        """Copy the runtime-tunable fields out of a config object."""
+
         return cls(
             n_sources=config.n_sources,
             confidence_threshold=config.confidence_threshold,
@@ -115,6 +123,9 @@ class SharedLocalizerSettings:
     ):
         context = context or mp.get_context()
         initial = LocalizerSettings.from_config(config)
+        # One shared array of doubles holds the whole snapshot; callers
+        # must create the worker process from the same context so the
+        # child can inherit this memory.
         self._values = context.Array(
             "d", [float(getattr(initial, field)) for field in _FIELD_ORDER]
         )
@@ -125,7 +136,12 @@ class SharedLocalizerSettings:
         return int(self._generation.value)
 
     def update(self, **values: Any) -> bool:
-        """Apply the provided fields; unknown names raise ``KeyError``."""
+        """Apply the provided fields; unknown names raise ``KeyError``.
+
+        Values are normalised (angles wrapped, integers rounded, numeric
+        limits clamped) before they are stored.  Returns True when the
+        snapshot actually changed.
+        """
 
         unknown = set(values).difference(_FIELD_ORDER)
         if unknown:
@@ -139,6 +155,8 @@ class SharedLocalizerSettings:
                 if field not in values:
                     continue
                 value = _normalize(field, values[field])
+                # Only bump the generation when something really changed,
+                # so readers do not reprocess identical settings.
                 if self._values[index] != value:
                     self._values[index] = value
                     changed = True
@@ -147,6 +165,9 @@ class SharedLocalizerSettings:
         return changed
 
     def snapshot(self) -> LocalizerSettings:
+        """Return a consistent copy of the shared values."""
+
+        # Copy while holding the lock, then convert outside it.
         with self._values.get_lock():
             values = [
                 self._values[index] for index in range(len(_FIELD_ORDER))
@@ -158,12 +179,17 @@ class SharedLocalizerSettings:
 
 
 def _normalize(field: str, value: Any) -> float:
+    """Coerce a UI value into the range and type the field expects."""
+
     number = float(value)
     if field in {"mic_rotation", "marker_azimuth_offset"}:
+        # Angles are periodic, so wrap instead of clamping.
         return number % 360.0
     if field in _INTEGER_FIELDS:
+        # Shared storage is double; round so int fields stay integral.
         number = float(round(number))
     low, high = _LIMITS[field]
+    # Keep out-of-range values from reaching the DSP stages.
     return min(high, max(low, number))
 
 
@@ -203,7 +229,11 @@ class LatestLocalization:
     def write(
         self, confidence: float, sources: Iterable[SourceSnapshot]
     ) -> None:
+        """Publish a batch; sources beyond MAX_SOURCES are dropped."""
+
         source_list = list(sources)[:MAX_SOURCES]
+        # Everything is written under one lock so a reader never sees a
+        # half-updated batch.
         with self._lock:
             self._count.value = len(source_list)
             self._confidence.value = float(confidence)
@@ -215,10 +245,14 @@ class LatestLocalization:
             self._generation.value += 1
 
     def read(self) -> LocalizationBatch | None:
+        """Return the latest batch, or None until the first write."""
+
         with self._lock:
+            # generation == 0 means that no batch has ever been published.
             if self._generation.value == 0:
                 return None
 
+            # Clamp defensively in case capacity ever changes.
             count = min(int(self._count.value), MAX_SOURCES)
             confidence = float(self._confidence.value)
             sources = tuple(
@@ -239,6 +273,8 @@ class LatestLocalization:
             )
 
     def clear(self) -> None:
+        """Mark the snapshot empty and advance the generation."""
+
         with self._lock:
             self._count.value = 0
             self._confidence.value = 0.0
@@ -247,11 +283,14 @@ class LatestLocalization:
                 self._angles[2 * index + 1] = 0.0
                 self._screen[2 * index] = 0
                 self._screen[2 * index + 1] = 0
+            # Bump the generation so readers observe the cleared state.
             self._generation.value += 1
 
 
 @dataclass
 class LocalizerHandle:
+    """Parent-side handle bundling the worker process and shared state."""
+
     process: Any
     latest: LatestLocalization
     stop_event: Any
@@ -265,9 +304,13 @@ class LocalizerHandle:
         return self.settings.update(**values)
 
     def stop(self, timeout: float = 2.0) -> None:
+        """Ask the worker to exit, terminating it if it overruns."""
+
         self.stop_event.set()
         self.process.join(timeout=timeout)
         if self.process.is_alive():
+            # Escalate if the worker ignored the event (for example while
+            # blocked in a native audio or ML call).
             self.process.terminate()
             self.process.join(timeout=timeout)
 
@@ -281,6 +324,8 @@ def run_worker(
 ) -> None:
     """Child-process entry point.  Must stay importable and picklable."""
 
+    # Imported here so the parent process does not pull in torch or the
+    # audio hardware just to spawn the worker.
     from chandelier.hardware.microphone import MicrophoneStream
     from chandelier.localizer.pipeline import iter_detections
     from chandelier.log import configure_logging, get_logger
@@ -288,11 +333,13 @@ def run_worker(
     configure_logging()
     logger = get_logger(__name__)
     stream = None
+    # Bind the bound method once; it is called per chunk and per batch.
     settings_provider = (
         settings.snapshot if settings is not None else None
     )
 
     try:
+        # Open the stream in the child: the parent never touches ALSA.
         stream = MicrophoneStream(
             rate=config.rate,
             chunk=config.chunk,
@@ -308,11 +355,14 @@ def run_worker(
         ):
             if stop_event.is_set():
                 break
+            # Re-read settings per batch so menu changes apply without a
+            # worker restart.
             current = (
                 settings_provider()
                 if settings_provider is not None
                 else None
             )
+            # Drop quiet or empty batches before paying for the projection.
             threshold = (
                 current.confidence_threshold
                 if current is not None
@@ -362,6 +412,8 @@ def run_worker(
                 if current is not None
                 else config.marker_y_gain
             )
+            # Project directions to screen pixels here so the parent only
+            # has to copy integers.
             sources = []
             for rank, detection in enumerate(batch.detections[:MAX_SOURCES]):
                 screen_x, screen_y = aziel_to_screen_spherical(
@@ -393,12 +445,14 @@ def run_worker(
                         rank=rank,
                     )
                 )
+            # Publish the whole batch atomically for the UI thread.
             latest.write(batch.confidence, sources)
     except KeyboardInterrupt:
         pass
     except Exception:
         logger.exception("localisation worker stopped unexpectedly")
     finally:
+        # Always release the microphone, even after an unexpected error.
         if stream is not None:
             try:
                 stream.close()
@@ -420,10 +474,15 @@ def start_worker(
     *,
     context_name: str | None = None,
 ) -> LocalizerHandle:
+    """Create the shared state and start the localizer child process."""
+
+    # All primitives must come from the same context as the process so
+    # they can be inherited by the child.
     context = mp.get_context(context_name or _context_name())
     latest = LatestLocalization(context)
     stop_event = context.Event()
     settings = SharedLocalizerSettings(config, context)
+    # Daemon worker: it must not outlive the process that owns the display.
     process = context.Process(
         target=run_worker,
         args=(config, screen_size, latest, stop_event, settings),

@@ -11,6 +11,8 @@ from chandelier.localizer.pipeline import detect_file
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for offline file localisation."""
+
     parser = argparse.ArgumentParser(description="Run SRP-PHAT on a WAV file")
     parser.add_argument("--wave", required=True, help="path to a WAV file")
     parser.add_argument(
@@ -27,12 +29,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run SRP-PHAT on one WAV file and print azimuth/elevation pairs.
+
+    Microphone geometry, sample rate, and the other pipeline settings come
+    from the normal config file; ``--src`` and ``--ignored-channels`` only
+    override the localizer for this run.
+    """
+
     args = build_parser().parse_args(argv)
     path = Path(args.wave)
     if not path.is_file():
         raise SystemExit(f"wave file not found: {path}")
 
     config = load_config()
+    # ``replace`` copies the config object, so every setting not named here
+    # keeps its persisted value.
     localizer = replace(
         config.localizer,
         n_sources=args.src,

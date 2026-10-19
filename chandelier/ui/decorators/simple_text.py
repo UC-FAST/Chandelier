@@ -13,6 +13,15 @@ from chandelier.ui.text_render import get_renderer
 
 
 class SimpleText:
+    """Paginated key/value overlay.
+
+    ``func_list`` is a tuple of zero-argument callables, one per page; each
+    call returns a mapping of format strings to values, which is evaluated
+    every time the page is drawn (so live values stay current).  ``padding``
+    is ``(left, top, right, bottom)`` in pixels.  Page changes only update
+    an index, making navigation cheap.
+    """
+
     def __init__(
         self,
         func_list: list,
@@ -60,6 +69,10 @@ class SimpleText:
         self._index = page
 
     def decorate(self, frame: np.ndarray, rotate: int = 0) -> np.ndarray:
+        """Render the current page and return the (possibly new) frame."""
+
+        # Callables are re-evaluated per draw on purpose: this is how
+        # sensor readings and other live values reach the screen.
         widget = self._func_list[self._index]()
         if not widget:
             return frame
@@ -71,6 +84,8 @@ class SimpleText:
         available_height = self._height - top_padding - bottom_padding
         text_count = len(widget)
 
+        # Spread the leftover vertical space evenly between rows.  A single
+        # row has no gap to fill, so avoid dividing by zero.
         if text_count == 1:
             step = 0
         else:
@@ -98,8 +113,11 @@ class SimpleText:
             y_position += self._font_height + step
 
         if rotate:
+            # Rotate only the scratch overlay, then add it: rotating the
+            # full frame would cost an extra copy of the whole image.
             rotate_times = (-rotate // 90) % 4
             if rotate_times:
                 sketch = np.rot90(sketch, rotate_times)
+            # Overlay weight 1 leaves the scene untouched outside the text.
             cv2.addWeighted(sketch, 1, frame, 1, 0, frame)
         return frame

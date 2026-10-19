@@ -11,6 +11,12 @@ from chandelier.localizer.pipeline import iter_detections
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for live microphone localisation.
+
+    Every option defaults to ``None`` so an omitted flag keeps the value from
+    the config file rather than overwriting it with argparse's zero value.
+    """
+
     parser = argparse.ArgumentParser(
         description="Run SRP-PHAT on the live microphone array"
     )
@@ -30,10 +36,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Stream microphone audio, print detections until interrupted."""
+
     args = build_parser().parse_args(argv)
     config = load_config()
     localizer = config.localizer
 
+    # Only explicitly supplied flags override the persisted config; ``None``
+    # means "keep the configured value".
     overrides = {}
     if args.src is not None:
         overrides["n_sources"] = args.src
@@ -53,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
         overrides["speech_threshold"] = args.threshold
     localizer = replace(localizer, **overrides)
 
+    # Config stores ignored channels as a tuple; the stream adapter takes a
+    # list and does the final device-side filtering.
     stream = MicrophoneStream(
         rate=localizer.rate,
         chunk=localizer.chunk,
@@ -73,6 +85,8 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        # Always release the ALSA device, including on Ctrl-C, so the next
+        # run (or the UI) can reopen the microphone.
         stream.close()
     return 0
 

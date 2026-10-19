@@ -46,6 +46,8 @@ def _fibonacci_hemisphere(count: int):
     import torch
 
     golden_angle = math.pi * (3.0 - math.sqrt(5.0))
+    # Half-sample offset avoids a point exactly on the pole and makes the
+    # spiral symmetric; z runs from ~1 down to ~0 (upper hemisphere only).
     index = torch.arange(count, dtype=torch.float32) + 0.5
     z = 1.0 - index / count
     radius = torch.sqrt(torch.clamp(1.0 - z * z, min=0.0))
@@ -61,6 +63,8 @@ def _local_cap(center, radius_deg: float, step_deg: float):
     import torch
 
     center = center / center.norm()
+    # Pick a helper axis that is not nearly parallel to the centre so the
+    # tangent basis is well conditioned.
     helper = (
         torch.tensor([1.0, 0.0, 0.0])
         if abs(float(center[0])) < 0.9
@@ -72,6 +76,8 @@ def _local_cap(center, radius_deg: float, step_deg: float):
 
     radius = math.radians(radius_deg)
     step = math.radians(step_deg)
+    # One ring per step of angular radius; each ring is sampled at roughly
+    # constant arc length, with at least six points to avoid degeneracy.
     rings = max(1, int(round(radius / step)))
     points = [center]
     for ring in range(1, rings + 1):
@@ -98,9 +104,13 @@ def _score_directions(directions, weights, deltas, freqs):
     scores = torch.zeros(directions.shape[0], dtype=torch.float32)
     omega = 2.0 * math.pi * freqs
     for pair in range(deltas.shape[0]):
+        # Project the candidate direction onto the pair's displacement
+        # vector: this is the TDOA for a unit-amplitude plane wave.
         delays = directions @ deltas[pair]
         angle = delays[:, None] * omega[None, :]
         weight = weights[pair]
+        # Correlate with the measured cross-spectrum: Re(W * e^{j angle})
+        # is the phase alignment of that pair at this direction.
         scores += (
             weight.real[None, :] * torch.cos(angle)
             + weight.imag[None, :] * torch.sin(angle)
@@ -129,6 +139,7 @@ def doa_detection(mics: Any, waveform: Any, sample_rate: int = 16000):
 
     import torch
 
+    # Accept numpy arrays or tensors; flatten to (n_mics, 3).
     mics_t = torch.as_tensor(mics, dtype=torch.float32).reshape(-1, 3)
     wave = torch.as_tensor(waveform, dtype=torch.float32)
     if wave.ndim != 3:
@@ -137,16 +148,19 @@ def doa_detection(mics: Any, waveform: Any, sample_rate: int = 16000):
         )
 
     n_sources, time_steps, n_channels = wave.shape
+    # A single channel or no samples carries no spatial information.
     if n_channels < 2 or time_steps == 0:
         return torch.empty((n_sources, 0), dtype=torch.float32)
 
     win_length = max(16, int(round(sample_rate * _FRAME_SECONDS)))
     hop_length = max(1, int(round(sample_rate * _HOP_SECONDS)))
     if time_steps < win_length:
+        # Pad to one full analysis window so torch.stft returns a frame.
         wave = torch.nn.functional.pad(
             wave, (0, 0, 0, win_length - time_steps)
         )
 
+    # One batched STFT for all sources and channels, then reshape back.
     spectrum = torch.stft(
         wave.transpose(1, 2).reshape(n_sources * n_channels, -1),
         n_fft=win_length,
@@ -160,20 +174,28 @@ def doa_detection(mics: Any, waveform: Any, sample_rate: int = 16000):
         return_complex=True,
     ).reshape(n_sources, n_channels, win_length // 2 + 1, -1)
     # spectrum: (n_sources, n_channels, n_freq, n_frames)
+    # Drop DC: its phase is always zero and would bias the phase fit.
     freqs = torch.fft.rfftfreq(
         win_length, d=1.0 / float(sample_rate)
     )[1:]
     spectrum = spectrum[..., 1:, :]
 
+    # Unique microphone pairs; self-pairs would add only constant terms.
     pair_i, pair_j = torch.triu_indices(
         n_channels, n_channels, offset=1
     )
+    # Cross-spectrum per pair, averaged over frames to reduce noise.
     cross = spectrum[:, pair_i] * spectrum[:, pair_j].conj()
     weights = cross.mean(dim=-1)
     if _BETA:
+        # Generalised PHAT: divide by |W|^beta to keep phase information
+        # while taming low-energy bins.
         weights = weights / (weights.abs().pow(_BETA) + _EPSILON)
+    # Pair displacement / speed of sound: seconds of delay per unit of
+    # projection onto a candidate direction.
     deltas = (mics_t[pair_i] - mics_t[pair_j]) / _SPEED_OF_SOUND
 
+    # Fibonacci hemisphere gives near-uniform coverage without grid bias.
     coarse = _fibonacci_hemisphere(_COARSE_POINTS)
     detections = []
     for source in range(n_sources):
@@ -183,6 +205,7 @@ def doa_detection(mics: Any, waveform: Any, sample_rate: int = 16000):
         )
         best = coarse[int(torch.argmax(scores))]
 
+        # Refine inside a small cap to remove the coarse grid quantisation.
         refinement = _local_cap(
             best, _REFINE_RADIUS_DEG, _REFINE_STEP_DEG
         )
@@ -192,6 +215,7 @@ def doa_detection(mics: Any, waveform: Any, sample_rate: int = 16000):
         best = refinement[int(torch.argmax(refined_scores))]
 
         x, y, z = (float(value) for value in best)
+        # z >= 0 by construction, so elevation stays in [0, 90] degrees.
         azimuth = math.degrees(math.atan2(y, x)) % 360.0
         elevation = math.degrees(
             math.atan2(z, math.hypot(x, y))

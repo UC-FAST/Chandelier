@@ -52,6 +52,86 @@ def test_histogram_modes_render_bgr_and_grayscale(kwargs):
     assert gray.shape == (240, 320)
 
 
+def test_histogram_ignores_black_letterbox_borders():
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    # A 320x180 content area with one distinct gray level per row.
+    frame[30:210, :, :] = np.arange(1, 181, dtype=np.uint8)[:, None, None]
+
+    hist = Histogram()
+    hist._frame_calc(frame)
+
+    # Bin 0 must contain real content only, not the 19,200 black bar pixels.
+    assert [int(channel[0]) for channel in hist._data_list] == [0, 0, 0]
+    assert [int(channel[100]) for channel in hist._data_list] == [
+        320,
+        320,
+        320,
+    ]
+    heights = hist._bar_heights(240)
+    assert max(int(channel.max()) for channel in heights) == 240
+
+
+def test_histogram_is_confined_to_the_corner_box():
+    from chandelier.ui.decorators import corner_padding
+
+    padding = corner_padding(320, 240, corner="bottom-right")
+    assert padding == (214, 170, 6, 6)
+    assert corner_padding(320, 240, corner="bottom-center") == (
+        110,
+        170,
+        110,
+        6,
+    )
+
+    frame = np.full((240, 320, 3), 128, dtype=np.uint8)
+    Histogram(320, 240, padding=padding).decorate(frame)
+
+    # Outside the box the photo is untouched.
+    assert tuple(frame[10, 10]) == (128, 128, 128)
+    assert tuple(frame[100, 220]) == (128, 128, 128)
+    assert tuple(frame[200, 160]) == (128, 128, 128)
+    # Inside the box the translucent backdrop changed the pixels.
+    assert tuple(frame[200, 220]) != (128, 128, 128)
+
+
+def test_histogram_scale_ignores_a_clipped_shadow_spike():
+    from chandelier.ui.decorators import corner_padding
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    # Keep the first row non-black so content trimming keeps the black block,
+    # then fill the rest with a broad, low-count 200-bin distribution.
+    frame[0, :, :] = 1
+    values = (np.arange(320) % 200 + 1).astype(np.uint8)
+    frame[192:240, :, :] = values[None, :, None]
+
+    hist = Histogram(
+        320, 240, padding=corner_padding(320, 240, corner="bottom-right")
+    )
+    hist._frame_calc(frame)
+    heights = hist._bar_heights(64)
+
+    # Most populated bins should still use the box despite bin 0 holding
+    # roughly 80% of the frame.
+    flat = np.concatenate(heights)
+    assert int((flat >= 32).sum()) >= 10
+
+
+def test_histogram_keeps_plot_bins_for_portrait_letterbox():
+    from chandelier.ui.decorators import corner_padding
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    frame[30:210, 100:220] = np.arange(1, 181, dtype=np.uint8)[
+        :, None, None
+    ]
+
+    hist = Histogram(
+        320, 240, padding=corner_padding(320, 240, corner="bottom-right")
+    )
+    hist._frame_calc(frame)
+
+    assert len(hist._data_list[0]) == 100
+
+
 def test_histogram_rotation_and_empty_frame():
     frame = np.zeros((240, 240, 3), dtype=np.uint8)
     frame[100:120, 100:120] = 200
@@ -336,6 +416,86 @@ def test_status_bar_sides_render_in_two_columns():
     assert frame[:, :40].any()       # left column
     assert frame[:, -40:].any()      # right column
     assert not frame[120, 160].any()  # centre stays untouched
+
+
+def test_status_bar_top_bottom_renders_two_rows():
+    from chandelier.ui.decorators import StatusBar
+
+    frame = _frame()
+    bar = StatusBar(320, 240, font_height=10)
+    bar.set_position("top_bottom")
+    bar.set_items(
+        [
+            ("SGL", "success"),
+            ("AF-C", "success"),
+            ("1/100", "text"),
+            ("ISO800", "text"),
+            ("5000K", "text"),
+            ("CPU23%", "success"),
+            ("T45C", "success"),
+            ("30fps", "text"),
+            ("Z1.0", "text"),
+        ]
+    )
+    bar.decorate(frame, theme_id="dark_pro")
+
+    assert frame[:20, :].any()       # top row
+    assert frame[-20:, :].any()      # bottom row
+    assert not frame[120, 160].any()  # centre stays untouched
+
+
+def test_status_bar_keeps_label_and_value_as_separate_parts():
+    from chandelier.ui.decorators import StatusBar, StatusItem
+
+    bar = StatusBar(320, 240, font_height=10)
+    bar.set_items(
+        [StatusItem("CPU", "11%", label_role="dim", value_role="success")]
+    )
+
+    item = bar._items[0]
+    assert [part.text for part in item.parts] == ["CPU", "11%"]
+    assert [part.role for part in item.parts] == ["dim", "success"]
+    assert item.gap == 4
+    assert bar.items == ["CPU 11%"]
+
+
+def test_status_bar_stacks_label_above_value_for_sides():
+    from chandelier.ui.decorators import StatusBar, StatusItem
+
+    bar = StatusBar(320, 240, font_height=10)
+    bar.set_items([StatusItem("CPU", "11%", value_role="success")])
+
+    lines = bar._item_line_groups(bar._items[0])
+    assert [part.text for part in lines[0]] == ["CPU"]
+    assert [part.text for part in lines[1]] == ["11%"]
+
+
+def test_status_bar_sides_split_balances_item_count():
+    from chandelier.ui.decorators import StatusBar, StatusItem
+
+    bar = StatusBar(320, 240, font_height=10)
+    bar.set_items(
+        [StatusItem(f"L{index}", str(index)) for index in range(10)]
+    )
+
+    left, right = bar._split_for_sides()
+
+    assert len(left) == 5
+    assert len(right) == 5
+
+
+def test_status_bar_splits_items_by_width():
+    from chandelier.ui.decorators import StatusBar
+
+    bar = StatusBar(320, 240, font_height=10)
+    bar.set_items(
+        ["A", "LONGER-ITEM", "B", "ANOTHER-LONG-ITEM", "C"]
+    )
+    top, bottom = bar._split_for_two_bars()
+
+    assert top
+    assert bottom
+    assert top + bottom == bar._items
 
 
 def test_status_bar_position_falls_back_to_top():

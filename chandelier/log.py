@@ -40,6 +40,8 @@ class ConsoleFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         severity = record.levelno
+        # Custom numeric levels (e.g. 15) are not in the tables; round them
+        # down to the nearest standard level so lookup always succeeds.
         if severity not in _COLORS:
             if severity >= logging.CRITICAL:
                 severity = logging.CRITICAL
@@ -81,6 +83,8 @@ def configure_logging(level: int = logging.INFO) -> None:
 
     root = logging.getLogger()
     root.setLevel(level)
+    # Calling again (tests, embedded use) updates the existing handler
+    # instead of stacking duplicate output lines.
     if _CONFIGURED:
         for handler in root.handlers:
             handler.setLevel(level)
@@ -102,6 +106,8 @@ def get_logger(name: str) -> logging.Logger:
 def verbose_console_to_level(verbose_console: int) -> int:
     """Map the old 0/1/2 picamera verbosity scale to a logging level."""
 
+    # Values that already look like logging levels pass straight through;
+    # only the old 0/1/2 picamera scale needs translation.
     if verbose_console >= logging.DEBUG:
         return int(verbose_console)
     return {0: logging.ERROR, 1: logging.INFO, 2: logging.DEBUG}.get(

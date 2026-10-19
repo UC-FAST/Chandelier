@@ -10,6 +10,12 @@ from chandelier.ui.text_render import get_renderer
 
 
 def format_time(seconds: float) -> str:
+    """Format seconds as ``M:SS``, adding ``H:`` only when needed.
+
+    Negative input is treated as zero so a slightly out-of-range player
+    position cannot produce ``-1:-1``.
+    """
+
     seconds = max(0, int(seconds))
     hours, remainder = divmod(seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -19,6 +25,14 @@ def format_time(seconds: float) -> str:
 
 
 class PlayerHud:
+    """Bottom playback strip with play/pause, time and progress.
+
+    The widget is stateless on the drawing side: :meth:`set_state` copies
+    the player position each frame, and :meth:`decorate` renders a dark bar
+    over the bottom of the frame.  The frame is assumed to match the
+    configured ``width``/``height``; colours are BGR.
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -49,6 +63,8 @@ class PlayerHud:
         playing: bool,
         loop: bool,
     ) -> None:
+        """Update playback state; also makes the HUD visible."""
+
         self._position = max(0.0, position)
         self._duration = max(0.0, duration)
         self._playing = playing
@@ -56,6 +72,8 @@ class PlayerHud:
         self._visible = True
 
     def decorate(self, frame) -> None:
+        """Draw the strip and its state onto ``frame`` in place."""
+
         if not self._visible:
             return
         bar_height = 24
@@ -67,6 +85,8 @@ class PlayerHud:
             frame, (0, y0), (self._width, y0), (80, 80, 80), 1, cv2.LINE_AA
         )
 
+        # Icons are plain primitives: two bars for pause, a triangle for
+        # play, both anchored to the strip's vertical centre.
         icon_x = 8
         icon_cy = y0 + 12
         if self._playing:
@@ -115,6 +135,8 @@ class PlayerHud:
             frame, (track_x1, track_y), (track_x2, track_y),
             (70, 70, 70), 3, cv2.LINE_AA,
         )
+        # Clamp both ends so a stale position after a seek/stop cannot draw
+        # the knob outside the track.
         denominator = self._duration if self._duration > 0 else 1.0
         fraction = max(0.0, min(1.0, self._position / denominator))
         knob_x = int(track_x1 + (track_x2 - track_x1) * fraction)

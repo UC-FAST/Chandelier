@@ -11,6 +11,13 @@ from chandelier.ui.decorators.player_hud import format_time
 
 
 class RecordingBadge:
+    """Red blinking dot and elapsed time in the top-right corner.
+
+    The dot blinks at 2 Hz from wall-clock time rather than frame count, so
+    it keeps a steady rhythm even if the preview drops frames.  Colour is
+    BGR; the text is white for contrast.
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -25,8 +32,11 @@ class RecordingBadge:
         )
 
     def decorate(self, frame, elapsed: float | None) -> None:
+        """Draw the badge; ``elapsed=None`` hides it."""
+
         if elapsed is None:
             return
+        # 2 Hz blink derived from the clock (see class docstring).
         blink = int(time.monotonic() * 2) % 2 == 0
         text = f"REC {format_time(elapsed)}"
         (text_width, _), _ = cv2.getTextSize(
@@ -49,6 +59,12 @@ class RecordingBadge:
 
 
 class Countdown:
+    """Large self-timer digit over a translucent disc at frame centre.
+
+    ``remaining`` is seconds; the displayed value is rounded up so the last
+    fraction of a second still reads as "1" rather than "0".
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -63,6 +79,8 @@ class Countdown:
         )
 
     def decorate(self, frame, remaining: float | None) -> None:
+        """Draw the countdown; ``None`` or non-positive hides it."""
+
         if remaining is None or remaining <= 0:
             return
         text = str(max(1, int(math.ceil(remaining))))
@@ -72,6 +90,8 @@ class Countdown:
         cx = self._width // 2
         cy = self._height // 2
         radius = max(text_width, text_height) // 2 + 12
+        # Draw the disc on a copy, then blend it back.  Drawing on the frame
+        # first would make the blend darken the disc twice (0.55 then 0.45).
         overlay = frame.copy()
         cv2.circle(overlay, (cx, cy), radius, (0, 0, 0), -1, cv2.LINE_AA)
         cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)

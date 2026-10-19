@@ -1,8 +1,18 @@
+"""Named colour palette and BGR conversion helpers.
+
+OpenCV works in BGR channel order, so every :class:`Colors` value is stored
+as an OpenCV-ready BGR triple even though the names come from CSS.  Use
+:func:`to_bgr` for ``#RRGGBB`` strings and :func:`to_hex` to get an RGB
+string back for logs or web-facing output.
+"""
+
 import typing
 from enum import Enum
 
 
 class Colors(Enum):
+    """CSS colour names mapped to OpenCV BGR triples."""
+
     aliceblue = (255, 248, 240)
     antiquewhite = (215, 235, 250)
     aqua = (255, 255, 0)
@@ -142,6 +152,8 @@ class Colors(Enum):
     yellow = (0, 255, 255)
     yellowgreen = (50, 205, 154)
 
+    # Design-reference values written in RGB order and reversed once at
+    # import time, keeping the enum's BGR convention (see module docstring).
     industrialBlue=(16,26,171)[::-1]
     industrialGreen=(86,161,72)[::-1]
     industrialOrange=(195,85,76)[::-1]
@@ -152,7 +164,10 @@ class Colors(Enum):
 
 
 def to_bgr(color: str) -> typing.Tuple[int, int, int]:
+    """Convert a ``#RRGGBB`` string to an OpenCV ``(B, G, R)`` tuple."""
+
     h = color.lstrip('#')
+    # Hex literals are RGB; OpenCV wants the channels reversed.
     r = int(h[0:2], 16)
     g = int(h[2:4], 16)
     b = int(h[4:6], 16)
@@ -160,6 +175,8 @@ def to_bgr(color: str) -> typing.Tuple[int, int, int]:
 
 
 def to_hex(color: Colors):
+    """Convert a :class:`Colors` member to a ``#RRGGBB`` (RGB) string."""
+
     b, g, r = color.value
     return "#" + ('{:02X}' * 3).format(r, g, b)
 

@@ -3,6 +3,7 @@ import numpy as np
 
 from chandelier.config import load_config, load_menu_config
 from chandelier.ui.camera_end import CameraControlledEnd
+from chandelier.ui.decorators import StatusItem
 from tests.fakes import FakeCamera, FakeLeds
 
 
@@ -35,6 +36,24 @@ def test_menu_settings_are_applied():
             values[option.get("id")] = option.get("value")
     assert end._state.mf_assist is bool(values["mf_assist"])
     assert end._state.show_hist is bool(values["show_hist"])
+
+
+def test_histogram_box_avoids_the_status_bar():
+    end, _, _ = _make_end()
+
+    end._state.status_position = "off"
+    assert end._histogram_padding() == (214, 170, 6, 6)
+
+    end._state.status_position = "top_bottom"
+    band = end._status.bar_height
+    assert band == 22
+    assert end._histogram_padding() == (214, 170 - band, 6, 6 + band)
+
+    end._state.status_position = "bottom"
+    assert end._histogram_padding() == (214, 170 - band, 6, 6 + band)
+
+    end._state.status_position = "sides"
+    assert end._histogram_padding() == (110, 170, 110, 6)
 
 
 def test_localizer_menu_settings_are_forwarded():
@@ -222,7 +241,28 @@ def test_shutter_saves_with_menu_values():
     assert saved["height"] == 2592
     assert saved["save_metadata"] is False
     assert saved["save_raw"] is False
+    assert saved["exposure_time"] is None
+    assert saved["analogue_gain"] is None
     assert end._state.is_busy is False
+
+
+def test_shutter_passes_manual_exposure_to_still_capture():
+    end, camera, tree = _make_end()
+    _set_option(tree, "auto_expose", False)
+    _set_option(
+        tree,
+        "exposure_time",
+        {"content": "4s (Still)", "value": 4_000_000},
+    )
+    _set_option(tree, "analogue_gain", 2.0)
+    end.load_settings()
+
+    end.shutter_press_action()
+    next(end.main_loop())
+
+    saved = camera.saved[-1]
+    assert saved["exposure_time"] == 4_000_000
+    assert saved["analogue_gain"] == 2.0
 
 
 def test_brightness_and_zoom_actions():
@@ -253,6 +293,7 @@ def test_metadata_page():
     page = end._metadata_page()
     assert page["EPTime {}"] == 1000
     assert page["FPS {}"] == 30.0
+    assert page["ISO {}"] == 150
 
 
 def _set_option(tree, option_id, value):
@@ -442,11 +483,95 @@ def test_preview_server_errors_do_not_break_settings():
     end.load_settings()
 
 
-def test_status_bar_fps_uses_the_regular_text_role():
+def test_locks_are_skipped_in_manual_modes():
+    end, camera, tree = _make_end()
+    _set_option(tree, "auto_expose", False)
+    _set_option(tree, "ae_lock", True)
+    _set_option(tree, "awb", False)
+    _set_option(tree, "awb_lock", True)
+
+    camera.calls.clear()
+    end.load_settings()
+
+    names = [name for name, _ in camera.calls]
+    assert "set_manual_exposure" in names
+    assert "set_colour_gains" in names
+    assert "set_ae_lock" not in names
+    assert "set_awb_lock" not in names
+
+
+def test_locks_apply_in_auto_modes():
+    end, camera, tree = _make_end()
+    _set_option(tree, "auto_expose", True)
+    _set_option(tree, "ae_lock", True)
+    _set_option(tree, "awb", True)
+    _set_option(tree, "awb_lock", True)
+
+    camera.calls.clear()
+    end.load_settings()
+
+    names = [name for name, _ in camera.calls]
+    assert "set_ae_lock" in names
+    assert "set_awb_lock" in names
+
+
+def test_sides_status_items_use_two_line_labels():
+    end, camera, _ = _make_end()
+    end._state.status_position = "sides"
+
+    items = end._status_items()
+    labels = {
+        item.label: item.value
+        for item in items
+        if isinstance(item, StatusItem)
+    }
+
+    assert labels["DRV"] == "SGL"
+    assert labels["AF"] in {"MF", "S", "C"}
+    assert labels["SH"] == end._format_shutter(
+        camera.metadata["ExposureTime"]
+    )
+    assert labels["WB"] == "5000"
+    assert labels["ISO"] == "150"
+
+
+def test_status_bar_fps_is_a_label_value_item():
     end, _, _ = _make_end()
     items = end._status_items()
-    fps = f"{end._camera.frame_per_second:.0f}fps"
-    assert (fps, "text") in items
+    assert any(
+        isinstance(item, StatusItem)
+        and item.label == "FPS"
+        and item.value == f"{end._camera.frame_per_second:.0f}"
+        and item.value_role == "text"
+        for item in items
+    )
+
+
+def test_status_bar_shows_iso():
+    end, camera, _ = _make_end()
+    camera.metadata["AnalogueGain"] = 8.0
+    camera.metadata["DigitalGain"] = 1.25
+
+    items = end._status_items()
+
+    assert any(
+        isinstance(item, StatusItem)
+        and item.label == "ISO"
+        and item.value == "1000"
+        for item in items
+    )
+
+
+def test_iso_is_hidden_when_gain_is_unavailable():
+    end, camera, _ = _make_end()
+    camera.metadata["AnalogueGain"] = None
+
+    items = end._status_items()
+
+    assert not any(
+        isinstance(item, StatusItem) and item.label == "ISO"
+        for item in items
+    )
 
 
 def test_status_bar_shows_cpu_and_temperature():
@@ -456,5 +581,17 @@ def test_status_bar_shows_cpu_and_temperature():
 
     end, _, _ = _make_end(stats=FakeStats())
     items = end._status_items()
-    assert ("CPU85%", "danger") in items
-    assert ("T65C", "warning") in items
+    assert any(
+        isinstance(item, StatusItem)
+        and item.label == "CPU"
+        and item.value == "85%"
+        and item.value_role == "danger"
+        for item in items
+    )
+    assert any(
+        isinstance(item, StatusItem)
+        and item.label == "T"
+        and item.value == "65C"
+        and item.value_role == "warning"
+        for item in items
+    )

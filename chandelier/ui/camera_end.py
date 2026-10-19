@@ -29,12 +29,21 @@ from chandelier.ui.decorators import (
     RuleOfThirds,
     SimpleText,
     StatusBar,
+    StatusItem,
     Toast,
     Watermark,
     ZebraOverlay,
+    corner_padding,
 )
 
 
+# The 320x240 / 30 fps preview mode exposes 1..66666 us.  Longer presets are
+# applied only while the still configuration is active.
+_PREVIEW_MAX_EXPOSURE = 66_666
+
+
+# (menu option id, localizer worker field, cast, optional scale factor).
+# The trailing factor converts menu units into the worker's expected units.
 _LOCALIZER_OPTIONS = (
     (MenuOptionId.LOC_N_SOURCES.value, "n_sources", int),
     (MenuOptionId.LOC_CONFIDENCE.value, "confidence_threshold", float),
@@ -57,6 +66,13 @@ _LOCALIZER_OPTIONS = (
 
 @dataclass
 class CameraState:
+    """Runtime state of the preview screen.
+
+    Values are edited by buttons and menu options, then pushed to
+    libcamera by the ``_apply_*`` helpers.  Keeping them here lets the
+    preview loop read a consistent snapshot without querying the camera.
+    """
+
     zoom: float = 1.0
     brightness: float = 0.0
     show_hist: bool = False
@@ -105,6 +121,14 @@ class CameraState:
 
 
 class CameraControlledEnd(ControlledEnd):
+    """Preview end that owns capture/recording and libcamera settings.
+
+    The class sequences the still-capture session and video recording,
+    applies menu options, and decorates frames from
+    :meth:`CameraDevice.preview`.  Long-running sensor work stays in the
+    camera backend; this end only decides what to do and when.
+    """
+
     def __init__(
         self,
         camera: CameraDevice,
@@ -116,6 +140,7 @@ class CameraControlledEnd(ControlledEnd):
         preview_server=None,
         stats=None,
     ):
+        """Create the decorators once; per-frame overlays reuse them."""
         super().__init__(_id)
         self._camera = camera
         self._leds = leds
@@ -127,6 +152,8 @@ class CameraControlledEnd(ControlledEnd):
         self._menu_tree: dict | None = None
         self._localizer = localizer
         self._focus_distance: float | None = None
+        # Smooths the autofocus figure of merit so the metadata page and
+        # bar chart do not twitch with every frame.
         self._filter = SlidingWindowFilter(10)
         self._capture_session: CaptureSession | None = None
         self._mf_edges: np.ndarray | None = None
@@ -146,7 +173,15 @@ class CameraControlledEnd(ControlledEnd):
             color=Colors.gold.value,
         )
         self._busy = Busy(self._screen.width, self._screen.height)
-        self._hist = Histogram()
+        self._hist = Histogram(
+            self._screen.width,
+            self._screen.height,
+            padding=corner_padding(
+                self._screen.width,
+                self._screen.height,
+                corner="bottom-right",
+            ),
+        )
         self._grid = RuleOfThirds(
             self._screen.width, self._screen.height
         )
@@ -169,6 +204,7 @@ class CameraControlledEnd(ControlledEnd):
     # Menu option helpers
     # ------------------------------------------------------------------
     def _find_option_value(self, target: str):
+        """Return the raw value of the menu option identified by ``target``."""
         if self._menu_tree is None:
             raise RuntimeError("camera has not received the menu tree yet")
         for section in self._menu_tree.values():
@@ -178,12 +214,14 @@ class CameraControlledEnd(ControlledEnd):
         raise LookupError(target)
 
     def _option_value(self, target: str):
+        """Return a scalar option value, unwrapping dict-style entries."""
         value = self._find_option_value(target)
         if isinstance(value, dict):
             return value.get("value")
         return value
 
     def _option_value_or(self, target: str, default=None):
+        """Like :meth:`_option_value`, but tolerate missing or bad options."""
         try:
             return self._option_value(target)
         except (RuntimeError, LookupError, TypeError, ValueError):
@@ -193,6 +231,11 @@ class CameraControlledEnd(ControlledEnd):
     # Metadata overlay
     # ------------------------------------------------------------------
     def _metadata_page(self):
+        """Build the metadata overlay page shown when decoration is on.
+
+        Report keys double as format strings (``"EPTime {}"``), matching
+        the convention used by the menu's metadata page.
+        """
         metadata = self._camera.metadata
         if not metadata:
             return None
@@ -210,13 +253,36 @@ class CameraControlledEnd(ControlledEnd):
             "FPS {}": round(self._camera.frame_per_second, 1),
             "FocusAvg {}": int(self._filter.calc()) if len(self._filter) else 0,
         }
+        iso = self._iso_value(metadata)
+        if iso is not None:
+            report["ISO {}"] = iso
         lens_position = metadata.get("LensPosition")
         if lens_position is not None:
             report["Lens {}"] = round(lens_position, 2)
         return report
 
     @staticmethod
+    def _iso_value(metadata) -> int | None:
+        """Approximate ISO the same way Picamera2 writes EXIF ISO.
+
+        Libcamera exposes gain, not ISO.  Picamera2 stores
+        ``ISOSpeedRatings = (AnalogueGain * DigitalGain) * 100``; using the
+        same formula keeps the overlay consistent with saved photos.
+        """
+
+        try:
+            analogue = float(metadata["AnalogueGain"])
+            digital = float(metadata.get("DigitalGain", 1.0))
+        except (KeyError, TypeError, ValueError):
+            return None
+        total_gain = analogue * digital
+        if total_gain <= 0:
+            return None
+        return max(1, int(round(total_gain * 100)))
+
+    @staticmethod
     def _format_shutter(microseconds: float) -> str:
+        """Render an exposure time in the compact status-bar style."""
         if microseconds >= 1_000_000:
             return f"{microseconds / 1_000_000:.1f}s"
         if microseconds >= 1000:
@@ -275,6 +341,12 @@ class CameraControlledEnd(ControlledEnd):
         self._state.zoom_hold = False
 
     def shutter_press_action(self) -> None:
+        """Dispatch the shutter by current state.
+
+        Priority matters: stop an active recording first, then cancel a
+        running burst/interval session, then start whatever the menu mode
+        selects.  This makes one button both start and cancel.
+        """
         if self._state.record_timestamp is not None:
             self._stop_recording()
             return
@@ -294,6 +366,7 @@ class CameraControlledEnd(ControlledEnd):
         self._start_capture_session()
 
     def _start_capture_session(self) -> None:
+        """Create the capture session for the configured still mode."""
         mode = self._state.capture_mode
         if mode == "burst":
             settings = CaptureSettings(
@@ -316,6 +389,7 @@ class CameraControlledEnd(ControlledEnd):
                 interval=0.0,
                 initial_delay=self._state.self_timer,
             )
+        # The preview loop drives the session; there is no timer thread.
         self._capture_session = CaptureSession(settings, time.monotonic())
         if self._state.self_timer:
             self._toast.set_text(f"{tr('TIMER')} {self._state.self_timer}")
@@ -323,6 +397,7 @@ class CameraControlledEnd(ControlledEnd):
             self._toast.set_text("CAPTURE")
 
     def _resolution(self) -> tuple[int, int]:
+        """Return the still resolution from the menu, or ``(0, 0)``."""
         value = self._option_value_or(MenuOptionId.RESOLUTION.value, [0, 0])
         try:
             return int(value[0]), int(value[1])
@@ -330,6 +405,11 @@ class CameraControlledEnd(ControlledEnd):
             return 0, 0
 
     def _capture_photo(self, index: int) -> None:
+        """Save one still using the menu's format and exposure settings.
+
+        Invoked from :meth:`CaptureSession.tick` inside the preview loop,
+        so it blocks frame delivery while the camera switches modes.
+        """
         multi = self._state.capture_mode in {"burst", "interval"}
         suffix = f"_{index + 1}" if multi else ""
         self._state.is_busy = True
@@ -350,6 +430,26 @@ class CameraControlledEnd(ControlledEnd):
                 str(self._config.camera.path),
                 f"{int(time.time())}{suffix}",
             )
+            auto_expose = bool(
+                self._option_value_or(
+                    MenuOptionId.AUTO_EXPOSE.value, True
+                )
+            )
+            # Manual exposure/gain controls are only valid with AE off;
+            # libcamera ignores or rejects them while AE is enabled.
+            exposure_time = None
+            analogue_gain = None
+            if not auto_expose:
+                exposure_time = int(
+                    self._option_value_or(
+                        MenuOptionId.EXPOSURE_TIME.value, 10000
+                    )
+                )
+                analogue_gain = float(
+                    self._option_value_or(
+                        MenuOptionId.ANALOGUE_GAIN.value, 1.0
+                    )
+                )
             self._camera.save_frame(
                 file_path=path,
                 extension=extension,
@@ -365,7 +465,11 @@ class CameraControlledEnd(ControlledEnd):
                         MenuOptionId.DNG_ENABLE.value, False
                     )
                 ),
+                exposure_time=exposure_time,
+                analogue_gain=analogue_gain,
             )
+            # Re-read the saved file so the watermark is baked into the
+            # stored image at full resolution, not just the preview.
             if self._option_value_or(MenuOptionId.WATERMARK.value, False):
                 frame = cv2.imread(f"{path}.{extension}")
                 if frame is not None and width > 0 and height > 0:
@@ -379,6 +483,7 @@ class CameraControlledEnd(ControlledEnd):
             self._state.is_busy = False
 
     def _start_recording(self) -> None:
+        """Switch to the video configuration and start the MP4 encoder."""
         if self._state.is_busy or (
             self._capture_session is not None
             and self._capture_session.active
@@ -389,6 +494,8 @@ class CameraControlledEnd(ControlledEnd):
         path = os.path.join(
             str(self._config.camera.video_path), f"{int(time.time())}.mp4"
         )
+        # Video reconfigures libcamera and restarts the preview on stop,
+        # so it must not overlap a burst/interval still session.
         try:
             self._camera.start_recording(int(width), int(height), path)
         except Exception:
@@ -400,6 +507,7 @@ class CameraControlledEnd(ControlledEnd):
         self._toast.set_text("REC")
 
     def _stop_recording(self) -> None:
+        """Stop the encoder and restore the preview configuration."""
         try:
             self._camera.stop_recording()
         except Exception:
@@ -438,6 +546,7 @@ class CameraControlledEnd(ControlledEnd):
         pass
 
     def _trigger_focus(self) -> None:
+        """Request a one-shot AF scan unless capture owns the camera."""
         if self._state.is_busy or (
             self._capture_session is not None
             and self._capture_session.active
@@ -462,9 +571,21 @@ class CameraControlledEnd(ControlledEnd):
     # Camera settings
     # ------------------------------------------------------------------
     def _apply_hdr(self) -> None:
+        """Push the HDR mode, downgrading to off when AE is disabled."""
+        auto_expose = bool(
+            self._option_value_or(MenuOptionId.AUTO_EXPOSE.value, True)
+        )
+        # HDR needs Auto Exposure; fail safe if an old menu still contains
+        # the invalid combination (the menu controller normally clears HDR).
+        self._state.hdr_mode = self._state.hdr_mode if auto_expose else 0
         self._camera.set_hdr(self._state.hdr_mode)
 
     def _apply_exposure(self) -> None:
+        """Apply either the AE configuration or fixed exposure and gain.
+
+        The branches are mutually exclusive: libcamera exposes EV,
+        metering and flicker controls only while AE is enabled.
+        """
         if bool(self._option_value_or(MenuOptionId.AUTO_EXPOSE.value, True)):
             self._camera.set_ae_enable(True)
             self._camera.set_ae_constraint_mode(
@@ -486,13 +607,25 @@ class CameraControlledEnd(ControlledEnd):
             )
             self._camera.set_exposure_value(self._state.exp_compensation)
         else:
+            exposure = int(
+                self._option_value_or(
+                    MenuOptionId.EXPOSURE_TIME.value, 10000
+                )
+            )
+            gain = float(
+                self._option_value_or(
+                    MenuOptionId.ANALOGUE_GAIN.value, 1.0
+                )
+            )
             self._camera.set_ae_enable(False)
+            # Keep the live preview responsive; longer presets are applied
+            # when the still configuration is active.
             self._camera.set_manual_exposure(
-                self._option_value_or(MenuOptionId.EXPOSURE_TIME.value, 10000),
-                self._option_value_or(MenuOptionId.ANALOGUE_GAIN.value, 1.0),
+                min(exposure, _PREVIEW_MAX_EXPOSURE), gain
             )
 
     def _apply_awb(self) -> None:
+        """Apply automatic white balance or fixed red/blue colour gains."""
         if bool(self._option_value_or(MenuOptionId.AWB.value, True)):
             self._camera.set_awb_enable(True)
             self._camera.set_awb_mode(
@@ -506,6 +639,7 @@ class CameraControlledEnd(ControlledEnd):
             )
 
     def _apply_focus(self) -> None:
+        """Push the AF mode plus its speed and range tuning."""
         state = self._state
         self._camera.set_af_speed(state.af_speed)
         self._camera.set_af_range(state.af_range)
@@ -514,15 +648,22 @@ class CameraControlledEnd(ControlledEnd):
         )
 
     def _apply_manual_controls(self) -> None:
+        """Apply colour controls and the optional AE/AWB locks."""
         self._camera.set_image_controls(
             saturation=self._state.saturation,
             contrast=self._state.contrast,
             sharpness=self._state.sharpness,
         )
-        # Locks are applied last so they override the automatic settings.
-        if self._state.ae_lock:
+        # Locks only make sense in the corresponding automatic mode.  In
+        # manual mode the lock would overwrite the user's exposure/gain
+        # values with the last frame's metadata.
+        auto_expose = bool(
+            self._option_value_or(MenuOptionId.AUTO_EXPOSE.value, True)
+        )
+        awb = bool(self._option_value_or(MenuOptionId.AWB.value, True))
+        if self._state.ae_lock and auto_expose:
             self._camera.set_ae_lock(True)
-        if self._state.awb_lock:
+        if self._state.awb_lock and awb:
             self._camera.set_awb_lock(True)
 
     def _apply_preview_server(self, value=None) -> None:
@@ -623,6 +764,7 @@ class CameraControlledEnd(ControlledEnd):
             )
 
     def _read_overlay_settings(self) -> None:
+        """Copy overlay-related menu options into :class:`CameraState`."""
         state = self._state
         state.show_grid = bool(
             self._option_value_or(MenuOptionId.SHOW_GRID.value, False)
@@ -653,6 +795,7 @@ class CameraControlledEnd(ControlledEnd):
         )
 
     def _read_capture_settings(self) -> None:
+        """Copy capture/recording menu options into :class:`CameraState`."""
         state = self._state
         mode = int(
             self._option_value_or(MenuOptionId.CAPTURE_MODE.value, 0)
@@ -689,6 +832,11 @@ class CameraControlledEnd(ControlledEnd):
             state.record_resolution = (1280, 720)
 
     def load_settings(self) -> None:
+        """Read every camera menu option and apply it to libcamera.
+
+        Called on entry and whenever the menu sends a new tree, so it must
+        be idempotent and tolerate older menus with missing options.
+        """
         state = self._state
         state.exp_compensation = float(
             self._option_value_or(
@@ -751,6 +899,11 @@ class CameraControlledEnd(ControlledEnd):
     # Messages and lifecycle
     # ------------------------------------------------------------------
     def msg_receiver(self, sender: str, payload) -> None:
+        """Handle menu-tree updates, preview toggles and AF requests.
+
+        Menu broadcasts are ``(action, tree)`` sequences; a bare bool
+        enables or disables the web preview server.
+        """
         if isinstance(payload, bool):
             self._apply_preview_server(payload)
             return
@@ -766,6 +919,7 @@ class CameraControlledEnd(ControlledEnd):
             self._trigger_focus()
 
     def on_enter(self, last_id: str | None) -> None:
+        """Prepare media folders and request the current menu settings."""
         self._config.camera.path.mkdir(parents=True, exist_ok=True)
         self._config.camera.video_path.mkdir(parents=True, exist_ok=True)
         self.send_message(EndId.MENU.value, self.id)
@@ -773,6 +927,7 @@ class CameraControlledEnd(ControlledEnd):
             self.load_settings()
 
     def on_exit(self) -> None:
+        """Cancel capture/recording and turn off the indicator LEDs."""
         if self._capture_session is not None:
             self._capture_session.cancel()
             self._capture_session = None
@@ -785,8 +940,31 @@ class CameraControlledEnd(ControlledEnd):
     # ------------------------------------------------------------------
     # Preview loop
     # ------------------------------------------------------------------
-    def _status_items(self) -> list[str | tuple[str, str]]:
+    def _histogram_padding(self) -> tuple[int, int, int, int]:
+        """Keep the histogram box clear of the status bar."""
+
+        width = self._screen.width
+        height = self._screen.height
+        position = self._state.status_position
+        if position == "sides":
+            # The side panels hug both edges; the bottom centre stays free.
+            return corner_padding(width, height, corner="bottom-center")
+
+        left, top, right, bottom = corner_padding(
+            width, height, corner="bottom-right"
+        )
+        if position in {"bottom", "top_bottom"}:
+            band = self._status.bar_height
+            top = max(0, top - band)
+            bottom += band
+        return left, top, right, bottom
+
+    def _status_items(self) -> list:
+        """Build status-bar items from the capture mode and metadata."""
         metadata = self._camera.metadata or {}
+        # Side panels are narrow, so they use label/value pairs and
+        # abbreviated values rather than inline tokens.
+        side_mode = self._state.status_position == "sides"
         if self._state.record_timestamp is not None:
             mode = "REC"
             mode_role = "danger"
@@ -797,29 +975,61 @@ class CameraControlledEnd(ControlledEnd):
                 "interval": "INT",
             }.get(self._state.capture_mode, "SGL")
             mode_role = "success"
-        items: list[str | tuple[str, str]] = [(mode, mode_role)]
+        if side_mode:
+            items: list = [
+                StatusItem("DRV", mode, value_role=mode_role)
+            ]
+        else:
+            items = [(mode, mode_role)]
         focus_code = {0: "MF", 1: "AF-S", 2: "AF-C"}.get(
             self._state.focus_mode, "AF"
         )
-        items.append(
-            (focus_code, "warning" if self._state.focus_mode == 0 else "success")
+        focus_role = (
+            "warning" if self._state.focus_mode == 0 else "success"
         )
-        if self._state.focus_mode == 0:
-            items.append((f"L{int(self._state.focus_position)}", "dim"))
-        if metadata.get("ExposureTime") is not None:
+        if side_mode:
+            focus_value = {
+                "MF": "MF",
+                "AF-S": "S",
+                "AF-C": "C",
+            }.get(focus_code, focus_code)
             items.append(
-                (self._format_shutter(metadata["ExposureTime"]), "text")
+                StatusItem("AF", focus_value, value_role=focus_role)
             )
-        if metadata.get("AnalogueGain") is not None:
-            items.append((f"G{float(metadata['AnalogueGain']):.1f}", "text"))
+        else:
+            items.append((focus_code, focus_role))
+        if self._state.focus_mode == 0:
+            items.append(
+                StatusItem(
+                    "L",
+                    str(int(self._state.focus_position)),
+                    label_role="dim",
+                    value_role="dim",
+                )
+            )
+        if metadata.get("ExposureTime") is not None:
+            shutter = self._format_shutter(metadata["ExposureTime"])
+            if side_mode:
+                items.append(StatusItem("SH", shutter))
+            else:
+                items.append((shutter, "text"))
+        iso = self._iso_value(metadata)
+        if iso is not None:
+            items.append(StatusItem("ISO", str(iso)))
         if metadata.get("ColourTemperature") is not None:
-            items.append((f"{int(metadata['ColourTemperature'])}K", "text"))
+            kelvin = int(metadata["ColourTemperature"])
+            if side_mode:
+                # "WB" already implies Kelvin; drop the unit to stay narrow.
+                items.append(StatusItem("WB", str(kelvin)))
+            else:
+                items.append((f"{kelvin}K", "text"))
         if self._stats is not None:
             try:
                 cpu, temperature = self._stats.cpu_snapshot()
             except Exception:
                 cpu = temperature = None
             if cpu is not None:
+                # Match the system monitor's green/amber/red bands.
                 role = (
                     "success"
                     if cpu < 60
@@ -827,8 +1037,11 @@ class CameraControlledEnd(ControlledEnd):
                     if cpu < 85
                     else "danger"
                 )
-                items.append((f"CPU{cpu:.0f}%", role))
+                items.append(
+                    StatusItem("CPU", f"{cpu:.0f}%", value_role=role)
+                )
             if temperature is not None:
+                # Same warning bands the system monitor uses.
                 role = (
                     "success"
                     if temperature < 60
@@ -836,24 +1049,49 @@ class CameraControlledEnd(ControlledEnd):
                     if temperature < 75
                     else "danger"
                 )
-                items.append((f"T{temperature:.0f}C", role))
-        items.append((f"{self._camera.frame_per_second:.0f}fps", "text"))
-        items.append((f"Z{self._state.zoom:.1f}", "text"))
+                items.append(
+                    StatusItem("T", f"{temperature:.0f}C", value_role=role)
+                )
+        items.append(
+            StatusItem("FPS", f"{self._camera.frame_per_second:.0f}")
+        )
+        items.append(StatusItem("Z", f"{self._state.zoom:.1f}"))
         if abs(self._state.exp_compensation) > 1e-6:
             items.append(
-                (f"EV{self._state.exp_compensation:+.1f}", "accent")
+                StatusItem(
+                    "EV",
+                    f"{self._state.exp_compensation:+.1f}",
+                    value_role="accent",
+                )
             )
         if self._state.hdr_mode:
-            items.append((f"HDR{self._state.hdr_mode}", "warning"))
+            items.append(
+                StatusItem(
+                    "HDR",
+                    str(self._state.hdr_mode),
+                    value_role="warning",
+                )
+            )
         return items
 
     def main_loop(self):
+        """Yield decorated preview frames for the controller.
+
+        Overlay order is deliberate: the histogram samples the raw frame
+        before any drawing, geometry overlays come next, and informational
+        overlays (chart, status, badge) are painted last.  Focus peaking
+        is applied after them so its coloured edges stay visible.
+        """
+        # preview() blocks until libcamera delivers a frame, so the loop
+        # is paced by the sensor rather than by a sleep interval.
         for index, frame in enumerate(self._camera.preview()):
             now = time.monotonic()
             # Refreshing the focus-derived distance at ~4 Hz is plenty; the
             # lens itself moves much more slowly than the preview frame rate.
             if index % 5 == 0:
                 self._sync_source_distance()
+            # tick() captures at most one shot per preview frame, which
+            # serializes still saves with preview delivery.
             session = self._capture_session
             if session is not None:
                 session.tick(now, self._capture_photo)
@@ -878,8 +1116,11 @@ class CameraControlledEnd(ControlledEnd):
             # Compute the histogram from the raw preview, before UI overlays
             # (grid, zebra, status text) skew the pixel distribution.
             if self._state.show_hist:
+                self._hist.set_padding(self._histogram_padding())
                 self._hist.decorate(frame)
 
+            # Geometry overlays are cheap and pixel-independent, so they
+            # can be redrawn every frame.
             if self._state.show_grid:
                 self._grid.decorate(frame)
             if self._state.show_center:
@@ -887,6 +1128,8 @@ class CameraControlledEnd(ControlledEnd):
             if self._state.show_zebra:
                 self._zebra.decorate(frame)
 
+            # Suppress the chart/metadata while zooming or recording so
+            # those deliberate actions keep an unobstructed view.
             if (
                 self._state.decorate_enabled
                 and not self._state.zoom_hold
@@ -897,13 +1140,19 @@ class CameraControlledEnd(ControlledEnd):
             if self._state.is_busy:
                 self._busy.decorate(frame)
 
-            if self._state.status_position in {"top", "bottom", "sides"}:
+            if self._state.status_position in {
+                "top",
+                "bottom",
+                "top_bottom",
+                "sides",
+            }:
                 self._status.set_position(self._state.status_position)
                 self._status.set_items(self._status_items())
                 self._status.decorate(
                     frame, theme_id=self._state.menu_theme
                 )
 
+            # The zoom toast replaces the badge while zooming.
             if (
                 self._state.record_timestamp is not None
                 and not self._state.zoom_hold
@@ -943,6 +1192,8 @@ class CameraControlledEnd(ControlledEnd):
                 colorful_edges = np.zeros(
                     (edges.shape[0], edges.shape[1], 3), dtype=np.uint8
                 )
+                # Cycle colours each refresh so the peaking overlay looks
+                # alive even though the edge map updates at 10 fps.
                 if index % 3 == 0:
                     colorful_edges[edges != 0] = (0, 0, 255)
                 elif index % 3 == 1:

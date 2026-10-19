@@ -245,6 +245,18 @@ def test_controller_accepts_menu_reboot_message(monkeypatch):
     assert calls == ["reboot"]
 
 
+def test_controller_accepts_restart_service_message(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        Controller,
+        "_restart_service",
+        staticmethod(lambda: calls.append("restart_service")),
+    )
+    controller = Controller.__new__(Controller)
+    controller._handle_controller_message(("restart_service", {}))
+    assert calls == ["restart_service"]
+
+
 def test_controller_accepts_power_option_messages(monkeypatch):
     calls = []
     monkeypatch.setattr(
@@ -264,6 +276,24 @@ def test_controller_accepts_power_option_messages(monkeypatch):
         {"id": "power", "value": {"content": "Shutdown", "value": "shutdown"}}
     )
     assert calls == ["reboot", "shutdown"]
+
+
+def test_restart_service_prefers_passwordless_sudo(monkeypatch):
+    calls = []
+
+    class Result:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return Result()
+
+    monkeypatch.setattr("chandelier.controller.subprocess.run", fake_run)
+    Controller._restart_service()
+    assert calls == [
+        ["sudo", "-n", "systemctl", "restart", "cam.service"]
+    ]
 
 
 def test_shutdown_prefers_passwordless_sudo(monkeypatch):

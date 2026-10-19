@@ -13,19 +13,30 @@ def test_registry_and_fallback():
         "industrial",
         "aero",
         "classic",
-        "xp_luna",
+        "ubuntu",
+        "liquid_glass",
         "win2000",
         "win7",
-        "win10",
     }
     assert get_theme("dark_pro").id == "dark_pro"
     assert get_theme("aero").render_style == "aero"
     assert get_theme("classic").render_style == "classic"
-    assert get_theme("xp_luna").render_style == "luna"
+    assert get_theme("ubuntu").render_style == "modern"
+    assert get_theme("liquid_glass").render_style == "modern"
     assert get_theme("win2000").render_style == "win2000"
     assert get_theme("win7").render_style == "win7"
-    assert get_theme("win10").render_style == "win10"
     assert get_theme("does_not_exist").id == DEFAULT_THEME_ID
+
+
+def test_theme_choices_follow_registry_order():
+    from chandelier.ui.themes import THEME_CHOICES
+
+    expected = [
+        theme.id
+        for theme in sorted(THEMES.values(), key=lambda item: item.order)
+    ]
+    assert [choice["value"] for choice in THEME_CHOICES] == expected
+    assert len({theme.order for theme in THEMES.values()}) == len(THEMES)
 
 
 def test_theme_colours_are_bgr_triples():

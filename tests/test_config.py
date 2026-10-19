@@ -31,6 +31,9 @@ def test_load_config_resolves_paths_against_project_root(config_file):
     assert config.marker.mode == "single"
     assert config.marker.max_sources == 3
     assert config.marker.trail == 3
+    assert config.preview.auth_file == (
+        PROJECT_ROOT / "config/preview_auth.json"
+    ).resolve()
     assert config.menus_file == (PROJECT_ROOT / "config/menus.json").resolve()
 
 
@@ -39,6 +42,30 @@ def test_config_is_independent_of_working_directory(config_file, tmp_path, monke
     monkeypatch.chdir(tmp_path)
     config = load_config(config_file)
     assert config.screen.height == 240
+
+
+def test_preview_auth_file_is_configurable(config_file, tmp_path):
+    raw = json.loads(config_file.read_text(encoding="utf-8"))
+    raw["preview"] = {"auth_file": "config/custom_auth.json"}
+    target = tmp_path / "custom_preview.json"
+    target.write_text(json.dumps(raw), encoding="utf-8")
+    clear_config_cache()
+
+    config = load_config(target)
+    assert config.preview.auth_file == (
+        PROJECT_ROOT / "config/custom_auth.json"
+    ).resolve()
+
+
+def test_preview_section_must_be_an_object(config_file, tmp_path):
+    raw = json.loads(config_file.read_text(encoding="utf-8"))
+    raw["preview"] = "not an object"
+    target = tmp_path / "bad_preview.json"
+    target.write_text(json.dumps(raw), encoding="utf-8")
+    clear_config_cache()
+
+    with pytest.raises(ConfigError, match="preview"):
+        load_config(target)
 
 
 def test_legacy_pin_keys_are_rejected(config_file, tmp_path):
@@ -333,7 +360,12 @@ def test_shipped_menu_has_web_server_before_power():
     options = tree["camera"]["system"]["options"]
     ids = [option["id"] for option in options]
     assert "web_server" in ids
-    assert ids.index("web_server") + 1 == ids.index("power")
+    assert "restart_service" in ids
+    assert (
+        ids.index("web_server")
+        < ids.index("restart_service")
+        < ids.index("power")
+    )
 
     option = options[ids.index("web_server")]
     assert option["type"] == "bool"
@@ -384,17 +416,25 @@ def test_ensure_menu_defaults_adds_web_server_before_power():
     }
     assert ensure_menu_defaults(tree) is True
     ids = [option["id"] for option in tree["camera"]["system"]["options"]]
-    assert ids == ["language", "theme", "web_server", "power"]
+    assert ids == [
+        "language",
+        "theme",
+        "web_server",
+        "restart_service",
+        "power",
+    ]
     assert ensure_menu_defaults(tree) is False
 
 
 @pytest.mark.parametrize(
     ("show", "position", "expected"),
     [
-        (True, "bottom", "bottom"),
+        (True, "bottom", "top_bottom"),
+        (True, "top", "top_bottom"),
+        (True, "top_bottom", "top_bottom"),
         (True, "sides", "sides"),
         (False, "top", "off"),
-        (True, None, "top"),
+        (True, None, "top_bottom"),
         (False, None, "off"),
     ],
 )
@@ -454,10 +494,171 @@ def test_ensure_menu_defaults_merges_status_bar_options(
     assert merged["value"]["value"] == expected
     assert merged["content"] == "Status Bar"
     assert "enable_if" not in merged
-    assert any(
-        choice["value"] == "off" for choice in merged["options"]
-    )
+    merged_values = {
+        choice["value"] for choice in merged["options"]
+    }
+    assert {"off", "top_bottom", "sides"} <= merged_values
+    assert "top" not in merged_values
+    assert "bottom" not in merged_values
     assert ensure_menu_defaults(tree) is False
+
+
+def test_ensure_menu_defaults_updates_camera_control_steps():
+    from chandelier.menu_defaults import ensure_menu_defaults
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "exposure": {
+                "title": "Exposure",
+                "options": [
+                    {
+                        "id": "exposure_time",
+                        "type": "numeral",
+                        "value": 40001,
+                        "min": 1,
+                        "max": 66666,
+                        "step": 10000,
+                        "step_options": [100, 1000, 10000],
+                    },
+                    {
+                        "id": "analogue_gain",
+                        "type": "numeral",
+                        "value": 16,
+                        "min": 1,
+                        "max": 16,
+                        "step": 1,
+                        "step_options": [1, 10],
+                    },
+                ],
+            },
+            "color_gains": {
+                "title": "Color Gains",
+                "options": [
+                    {
+                        "id": "red_gain",
+                        "type": "numeral",
+                        "value": 0,
+                        "min": 0,
+                        "max": 32,
+                        "step": 1,
+                        "step_options": [0.1, 1],
+                    },
+                    {
+                        "id": "blue_gain",
+                        "type": "numeral",
+                        "value": 0,
+                        "min": 0,
+                        "max": 32,
+                        "step": 1,
+                        "step_options": [0.1, 1],
+                    },
+                ],
+            },
+            "manual": {
+                "title": "Manual",
+                "options": [
+                    {
+                        "id": "exp_compensation",
+                        "type": "numeral",
+                        "value": 0.0,
+                        "min": -4.0,
+                        "max": 4.0,
+                        "step": 0.5,
+                        "step_options": [0.1, 0.5],
+                    },
+                    {
+                        "id": "contrast",
+                        "type": "numeral",
+                        "value": 0.9999999999999999,
+                        "min": 0.0,
+                        "max": 2.0,
+                        "step": 0.1,
+                    },
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+
+    assert ensure_menu_defaults(tree) is True
+
+    options = {}
+    for section in tree["camera"].values():
+        for option in section.get("options", []):
+            options[option.get("id")] = option
+
+    assert options["exposure_time"]["type"] == "option"
+    assert options["exposure_time"]["value"] == {
+        "content": "1/25",
+        "value": 40000,
+    }
+    assert any(
+        choice["value"] == 30_000_000
+        for choice in options["exposure_time"]["options"]
+    )
+    assert "step" not in options["exposure_time"]
+    assert options["analogue_gain"]["step"] == 0.5
+    assert options["analogue_gain"]["step_options"] == [0.1, 0.5, 1]
+    for gain_id in ("red_gain", "blue_gain"):
+        assert options[gain_id]["min"] == 0.1
+        assert options[gain_id]["step"] == 0.1
+        assert options[gain_id]["value"] == 1.0
+    assert options["exp_compensation"]["enable_if"] == {
+        "id": "auto_expose",
+        "value": True,
+    }
+    assert options["contrast"]["value"] == 1.0
+    assert ensure_menu_defaults(tree) is False
+
+
+def test_ensure_menu_defaults_clears_hdr_without_auto_exposure():
+    from chandelier.menu_defaults import ensure_menu_defaults
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "exposure": {
+                "title": "Exposure",
+                "options": [
+                    {
+                        "id": "auto_expose",
+                        "type": "bool",
+                        "value": False,
+                    }
+                ],
+            },
+            "camera_settings": {
+                "title": "Camera Settings",
+                "options": [
+                    {
+                        "id": "hdr",
+                        "type": "option",
+                        "value": {
+                            "content": "MultiExposure",
+                            "value": 2,
+                        },
+                        "options": [
+                            {"content": "Off", "value": 0},
+                            {"content": "MultiExposure", "value": 2},
+                        ],
+                    }
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+
+    assert ensure_menu_defaults(tree) is True
+
+    hdr = next(
+        option
+        for section in tree["camera"].values()
+        for option in section.get("options", [])
+        if option.get("id") == "hdr"
+    )
+    assert hdr["value"]["value"] == 0
+    assert hdr["enable_if"] == {"id": "auto_expose", "value": True}
 
 
 def test_shipped_focus_menu_has_af_controls():
@@ -647,6 +848,87 @@ def test_migration_preserves_existing_theme_value():
         option.get("id") == "show_grid"
         for option in tree["camera"]["display"]["options"]
     )
+
+
+def test_migration_removes_retired_themes_and_orders_choices():
+    from chandelier.menu_defaults import ensure_menu_defaults
+    from chandelier.ui.themes import THEME_CHOICES
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "system": {
+                "title": "System",
+                "options": [
+                    {
+                        "id": "theme",
+                        "content": "Theme",
+                        "type": "option",
+                        "value": {
+                            "content": "Windows XP",
+                            "value": "xp_luna",
+                        },
+                        "options": [
+                            {"content": "Windows XP", "value": "xp_luna"},
+                            {"content": "Windows 10", "value": "win10"},
+                            {"content": "Dark Pro", "value": "dark_pro"},
+                        ],
+                    }
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+
+    assert ensure_menu_defaults(tree) is True
+    theme = next(
+        option
+        for option in tree["camera"]["system"]["options"]
+        if option["id"] == "theme"
+    )
+    assert theme["options"] == THEME_CHOICES
+    assert theme["value"] == {
+        "content": "Dark Pro",
+        "value": "dark_pro",
+    }
+    assert ensure_menu_defaults(tree) is False
+
+
+def test_migration_refreshes_stale_theme_label():
+    from chandelier.menu_defaults import ensure_menu_defaults
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "system": {
+                "title": "System",
+                "options": [
+                    {
+                        "id": "theme",
+                        "content": "Theme",
+                        "type": "option",
+                        "value": {
+                            "content": "Ubuntu (old)",
+                            "value": "ubuntu",
+                        },
+                        "options": [
+                            {"content": "Ubuntu (old)", "value": "ubuntu"}
+                        ],
+                    }
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+
+    assert ensure_menu_defaults(tree) is True
+    theme = next(
+        option
+        for option in tree["camera"]["system"]["options"]
+        if option["id"] == "theme"
+    )
+    assert theme["value"] == {"content": "Ubuntu", "value": "ubuntu"}
+    assert ensure_menu_defaults(tree) is False
 
 
 def test_validation_rejects_bad_option_and_numeral():

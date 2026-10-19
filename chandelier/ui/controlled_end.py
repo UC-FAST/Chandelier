@@ -21,10 +21,14 @@ class ControlledEnd(abc.ABC):
 
     def __init__(self, _id: str):
         self._id = _id
+        # Injected by the controller: irq() switches the active end, while
+        # msg_sender() delivers a payload to another end by id.
         self._irq: Callable[[str], None] | None = None
         self._msg_sender: Callable[[str, str, Any], None] | None = None
 
     # -- Multi-direction buttons --------------------------------------
+    # Every input hook is a no-op by default so a screen only overrides the
+    # controls it actually uses.
     def center_press_action(self) -> None: ...
     def center_release_action(self) -> None: ...
     def up_press_action(self) -> None: ...
@@ -35,6 +39,12 @@ class ControlledEnd(abc.ABC):
     def left_release_action(self) -> None: ...
     def right_press_action(self) -> None: ...
     def right_release_action(self) -> None: ...
+
+    # -- Touch input ---------------------------------------------------
+    def handle_touch(self, x: float, y: float) -> bool:
+        """Handle a normalized tap on the screen. Returns True if consumed."""
+
+        return False
 
     # -- Function buttons ---------------------------------------------
     def circle_press_action(self) -> None: ...
@@ -48,6 +58,7 @@ class ControlledEnd(abc.ABC):
     def rotary_encoder_select(self) -> None: ...
 
     # -- Communication -------------------------------------------------
+    # Default no-op: screens that accept payloads override this hook.
     def msg_receiver(self, sender: str, payload: Any) -> None: ...
 
     def msg_sender(self, func: Callable[[str, str, Any], None]) -> None:
@@ -59,14 +70,19 @@ class ControlledEnd(abc.ABC):
     def send_message(
         self, receiver: str, payload: Any = None, sender: str | None = None
     ) -> None:
+        """Send ``payload`` to ``receiver`` through the controller."""
         if self._msg_sender is None:
             raise RuntimeError(f"{self.id} has no message sender")
+        # Default the sender to this end so the receiver can reply.
         self._msg_sender(sender or self.id, end_id(receiver), payload)
 
     # -- Dispatch ------------------------------------------------------
     def handle_action(
         self, action: Action, phase: Phase = Phase.PRESS
     ) -> bool:
+        """Resolve an (action, phase) pair and invoke its handler."""
+        # Unmapped combinations are ignored rather than raising, so input
+        # handling stays forgiving while the action table evolves.
         spec = resolve_action(action, phase)
         if spec is None:
             return False
@@ -77,11 +93,14 @@ class ControlledEnd(abc.ABC):
         return True
 
     # -- Lifecycle -----------------------------------------------------
+    # main_loop yields BGR frames until the controller switches away.
     @abc.abstractmethod
     def main_loop(self) -> Iterator[np.ndarray]: ...
 
+    # Release resources here; called before another end becomes active.
     def on_exit(self) -> None: ...
 
+    # last_id identifies the end we came from, or None on first start.
     def on_enter(self, last_id: str | None) -> None: ...
 
     @property

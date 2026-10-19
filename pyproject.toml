@@ -49,4 +49,4 @@ include = ["chandelier*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
-norecursedirs = ["legacy", "res", ".git"]
+norecursedirs = ["res", ".git"]

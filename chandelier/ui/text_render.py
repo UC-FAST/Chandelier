@@ -39,6 +39,8 @@ _LATIN_FONTS = (
 
 
 def _first_existing(candidates: tuple[str, ...]) -> str | None:
+    """Return the first usable font path, honouring ``CHANDELIER_FONT``."""
+
     override = os.environ.get("CHANDELIER_FONT")
     if override and Path(override).is_file():
         return override
@@ -77,6 +79,15 @@ def _runs(text: str) -> list[tuple[str, bool]]:
 
 
 class TextRenderer:
+    """Pillow-backed text renderer with per-run font fallback.
+
+    Latin/Cyrillic and CJK runs use different font files (DroidSansFallback
+    in particular has no Latin glyphs), so a single string may produce
+    several patches.  Both font objects and rendered patches are cached;
+    menu screens are redrawn on input rather than per camera frame, and
+    repeated labels therefore hit the cache.
+    """
+
     def __init__(self):
         self._cjk_path = _first_existing(_CJK_FONTS)
         self._latin_path = _first_existing(_LATIN_FONTS)
@@ -96,6 +107,8 @@ class TextRenderer:
     @staticmethod
     @lru_cache(maxsize=64)
     def _load_font(path: str, size: int):
+        """Load and cache a TrueType font; fall back to Pillow's bitmap."""
+
         try:
             return ImageFont.truetype(path, size)
         except OSError:
@@ -109,11 +122,15 @@ class TextRenderer:
     def _measure_cached(
         self, text: str, size: int, path: str | None
     ) -> tuple[int, int]:
+        """Measure one same-font run; results are cached by arguments."""
+
         font = (
             self._load_font(path, max(6, int(size)))
             if path is not None
             else ImageFont.load_default()
         )
+        # getlength is the advance width (kerning included), while the
+        # bbox supplies the ink height above/below the baseline.
         advance = max(0, ceil(font.getlength(text)))
         bbox = font.getbbox(text, anchor="ls")
         height = max(0, ceil(bbox[3] - bbox[1]))
@@ -147,6 +164,14 @@ class TextRenderer:
         thickness: int,
         path: str | None,
     ):
+        """Render one run into a tightly cropped RGBA patch.
+
+        The patch keeps Pillow's native RGBA layout; :meth:`_composite`
+        converts the colour channels to BGR at blend time.  ``thickness``
+        is emulated with Pillow's stroke support, whose width is measured
+        outside the glyph, hence ``thickness - 1``.
+        """
+
         font = (
             self._load_font(path, max(6, int(size)))
             if path is not None
@@ -160,8 +185,11 @@ class TextRenderer:
 
         image = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(image)
+        # Callers pass OpenCV BGR; Pillow wants RGB.
         blue, green, red = color
         draw.text(
+            # Offset by the bbox origin so the ink starts at the patch's
+            # top-left corner instead of carrying empty margins.
             (-bbox[0], -bbox[1]),
             text,
             font=font,
@@ -175,9 +203,17 @@ class TextRenderer:
     def _composite(
         self, frame: np.ndarray, patch: np.ndarray, x: int, y: int
     ) -> None:
+        """Alpha-blend an RGBA patch onto a BGR frame at ``(x, y)``.
+
+        The intersection of patch and frame is computed first so glyphs
+        partially outside the image are clipped instead of raising.
+        """
+
         patch_h, patch_w = patch.shape[:2]
         frame_h, frame_w = frame.shape[:2]
 
+        # Negative destination coordinates mean the patch starts left/above
+        # the frame; skip that many source pixels in both axes.
         src_x = max(0, -x)
         src_y = max(0, -y)
         dst_x = max(0, x)
@@ -189,6 +225,9 @@ class TextRenderer:
 
         source = patch[src_y : src_y + height, src_x : src_x + width]
         region = frame[dst_y : dst_y + height, dst_x : dst_x + width]
+        # Per-pixel alpha carries the anti-aliasing.  Float arithmetic
+        # avoids integer rounding artefacts; reversing the patch channels
+        # converts Pillow's RGB into OpenCV's BGR.
         alpha = source[..., 3:4].astype(np.float32) / 255.0
         color_bgr = source[..., :3].astype(np.float32)[..., ::-1]
         region[:] = (
@@ -219,6 +258,8 @@ class TextRenderer:
         x = int(origin[0])
         baseline = int(origin[1])
 
+        # Runs may switch fonts, so each is drawn separately and the pen
+        # advances by that run's advance width.
         for run in _runs(text):
             path = self._run_font_path(run[0])
             font = (
@@ -230,6 +271,8 @@ class TextRenderer:
                 run[0], int(size), color, thickness, path
             )
             if patch is not None:
+                # bbox is relative to the baseline origin, so adding it
+                # positions the cropped patch correctly.
                 self._composite(
                     frame,
                     patch,
@@ -243,6 +286,12 @@ _renderer: TextRenderer | None = None
 
 
 def get_renderer() -> TextRenderer:
+    """Return the process-wide renderer, creating it on first use.
+
+    A single instance keeps the font and patch caches warm; constructing
+    one per widget would duplicate the caches and re-scan font paths.
+    """
+
     global _renderer
     if _renderer is None:
         _renderer = TextRenderer()

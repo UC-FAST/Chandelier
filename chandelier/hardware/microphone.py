@@ -31,7 +31,11 @@ class MicrophoneStream:
         self._device = device
         self._channels = channels
         self._ignored_channels = ignored_channels
+        # Unbounded queue written by PortAudio's callback thread; the
+        # consumer below drains any backlog, so it never blocks the callback.
         self._buff: queue.Queue = queue.Queue()
+        # Closed until __enter__ opens the stream, so iteration terminates
+        # immediately if used without the context manager.
         self._closed = True
         self._terminated = False
         self._format_type = pyaudio.paFloat32
@@ -54,6 +58,8 @@ class MicrophoneStream:
         return self._ignored_channels
 
     def __enter__(self) -> "MicrophoneStream":
+        """Open the PortAudio input stream and start delivering chunks."""
+        # ``device=None`` selects PortAudio's default input device.
         self._audio_stream = self._audio_interface.open(
             format=self._format_type,
             channels=self._channels,
@@ -81,18 +87,22 @@ class MicrophoneStream:
                 self._audio_stream.close()
                 self._audio_stream = None
         self._closed = True
+        # Wake a consumer blocked in __iter__; it exits on this sentinel.
         self._buff.put(None)
         if not self._terminated:
             self._audio_interface.terminate()
             self._terminated = True
 
     def _fill_buffer(self, in_data, frame_count, time_info, status_flags):
+        """PortAudio callback: enqueue one block of interleaved samples."""
         import pyaudio
 
+        # Runs on PortAudio's real-time thread; only enqueue and return.
         self._buff.put(np.frombuffer(in_data, dtype=np.float32))
         return None, pyaudio.paContinue
 
     def __iter__(self):
+        """Yield the newest buffered chunk, discarding any backlog."""
         while not self._closed:
             chunk = self._buff.get()
             if chunk is None:
@@ -107,6 +117,8 @@ class MicrophoneStream:
                 except queue.Empty:
                     break
 
+            # PortAudio delivers interleaved samples; reshape to
+            # (frames, channel) before dropping unwanted channels.
             chunk = np.reshape(chunk, (-1, self._channels))
             if self._ignored_channels:
                 mask = np.ones(self._channels, dtype=bool)

@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
+
+pytest.importorskip("game.engine")
+pytest.importorskip("game.renderer")
 
 from game.engine import (
     BALL_RADIUS,

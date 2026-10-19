@@ -12,7 +12,11 @@ import numpy as np
 
 
 class Display(Protocol):
-    """A BGR frame sink."""
+    """A BGR frame sink.
+
+    This mirrors only the surface the UI needs; concrete drivers may accept
+    extra optional arguments (for example a ``clear`` colour).
+    """
 
     width: int
     height: int
@@ -27,6 +31,8 @@ class Display(Protocol):
 
 
 class Led(Protocol):
+    """A binary indicator output."""
+
     def on(self) -> None: ...
 
     def off(self) -> None: ...
@@ -37,10 +43,14 @@ class Led(Protocol):
 
 
 class InputPanel(Protocol):
+    """A source of user actions from physical controls."""
+
     def close(self) -> None: ...
 
 
 class Camera(Protocol):
+    """Camera operations used by the preview, still and video code paths."""
+
     def start(self) -> None: ...
 
     def stop(self) -> None: ...
@@ -69,4 +79,6 @@ class Camera(Protocol):
 
 
 class Sensor(Protocol):
+    """Power/battery sensor with a releasable I2C handle."""
+
     def close(self) -> None: ...

@@ -39,6 +39,8 @@ class Detection:
 
 @dataclass(frozen=True)
 class DetectionBatch:
+    """Detections from one captured speech chunk."""
+
     confidence: float
     sample_rate: int
     detections: tuple[Detection, ...]
@@ -62,6 +64,7 @@ def detect_sources(
     ``waveform`` is expected in ``(time_step, n_channels)`` layout.
     """
 
+    # Imported lazily: torch is only needed when a detection actually runs.
     import torch
 
     if n_sources == 1:
@@ -70,12 +73,14 @@ def detect_sources(
         # to the DOA estimator is equivalent and removes a source of lag.
         estimates = np.asarray(waveform, dtype=np.float32)[None, ...]
     else:
+        # Duet expects (n_channels, time_step); the pipeline is time-major.
         duet = Duet(
             waveform.transpose(),
             n_sources=n_sources,
             sample_rate=sample_rate,
             delay_max=delay_max,
             n_delay_bins=n_delay_bins,
+            # Keep every channel so the DOA estimator can use the array.
             output_all_channels=True,
         )
         estimates = duet().astype(np.float32)
@@ -90,10 +95,14 @@ def detect_sources(
     if isinstance(directions, torch.Tensor):
         directions = directions.detach().cpu().numpy()
 
+    # Batch confidence is a cheap loudness proxy (peak sample), not a
+    # calibrated probability; the worker thresholds it for the overlay.
     confidence = (
         float(np.max(np.abs(waveform))) if waveform.size else 0.0
     )
     detections = []
+    # Directions arrive ordered by decreasing histogram prominence; the
+    # enumerate index becomes the marker rank downstream.
     for rank, (azimuth, elevation) in enumerate(directions):
         detections.append(
             Detection(
@@ -122,15 +131,20 @@ def iter_detections(
     without restarting the microphone stream.
     """
 
+    # Build the model lazily: loading Silero takes seconds and must happen
+    # inside the worker process, not at import time.
     loader = model_loader
     if model is None and loader is None:
         from chandelier.localizer.vad import load_silero_model
 
         if config.silero_model_dir is not None:
+            # Bind the configured checkout path into a zero-argument loader.
             loader = lambda: load_silero_model(config.silero_model_dir)
         else:
             loader = load_silero_model
 
+    # `loader` is None only when a ready-made `model` was supplied; the
+    # fallback keeps the chunker's callable parameter non-None.
     chunks = get_microphone_chunks(
         microphone_stream,
         max_to_cumulate=config.max_to_cumulate,
@@ -141,7 +155,10 @@ def iter_detections(
         settings_provider=settings_provider,
     )
     for chunk in chunks:
+        # Re-read the shared settings for every chunk so menu changes take
+        # effect without reopening the microphone stream.
         settings = settings_provider() if settings_provider else None
+        # Fall back to the startup config when no live settings exist.
         n_sources = (
             settings.n_sources if settings is not None else config.n_sources
         )
@@ -183,12 +200,14 @@ def detect_file(
 ) -> tuple[Detection, ...]:
     """Run the pipeline on a WAV file (offline CLI helper)."""
 
+    # scipy is only needed for offline use, so import it here.
     from scipy.io.wavfile import read
 
     sample_rate, samples = read(str(path))
     samples = np.asarray(samples)
 
     if samples.ndim == 1:
+        # Treat mono as a (time_step, 1) array to reuse the live path.
         samples = samples[:, None]
 
     # Infer the channel count from the file; an offline recording may have a
@@ -203,6 +222,8 @@ def detect_file(
     if ignored:
         mask[ignored] = False
 
+    # Boolean selection preserves channel order while dropping ignored
+    # channels.
     waveform = samples[:, mask]
     return detect_sources(
         waveform,

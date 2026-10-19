@@ -160,7 +160,10 @@ def test_camera_preview_capture_and_recording(monkeypatch, tmp_path):
     config = load_config()
     camera = CameraDevice(config.camera, config.screen)
 
-    assert camera._preview_config[1]["main"]["size"] == (640, 480)
+    assert camera._preview_config[1]["main"]["size"] == (
+        config.camera.preview_width,
+        config.camera.preview_height,
+    )
     frame = next(camera.preview())
     assert frame.shape == (config.screen.height, config.screen.width, 3)
     assert camera.metadata["ExposureTime"] == 1000
@@ -288,3 +291,33 @@ def test_unsupported_and_rejected_controls_are_skipped(monkeypatch):
     assert "Sharpness" not in applied
     assert "Contrast" not in camera._controls
     assert "Sharpness" not in camera._controls
+
+
+def test_save_frame_applies_long_exposure_to_still_config(
+    monkeypatch, tmp_path
+):
+    _install_fake_picamera2(monkeypatch)
+    monkeypatch.setattr("chandelier.hardware.camera.time.sleep", lambda _: None)
+    config = load_config()
+    camera = CameraDevice(config.camera, config.screen)
+
+    camera.save_frame(
+        file_path=str(tmp_path / "long"),
+        extension="jpeg",
+        width=640,
+        height=480,
+        exposure_time=4_000_000,
+        analogue_gain=2.0,
+    )
+
+    still_configs = [
+        cfg
+        for kind, cfg in camera._cam.configs
+        if kind == "switch" and cfg[0] == "still"
+    ]
+    assert still_configs
+    controls = still_configs[-1][1]["controls"]
+    assert controls["AeEnable"] is False
+    assert controls["ExposureTime"] == 4_000_000
+    assert controls["AnalogueGain"] == 2.0
+    assert controls["FrameDurationLimits"] == (4_050_000, 4_050_000)

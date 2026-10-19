@@ -158,6 +158,31 @@ def test_hardware_report_with_fake_psutil(monkeypatch):
     assert report["Throttle {}"] == "OK"
 
 
+def test_cpu_frequency_prefers_real_arm_clock(monkeypatch):
+    fake = types.ModuleType("psutil")
+    fake.cpu_freq = lambda: types.SimpleNamespace(current=2400.0)
+    calls = []
+
+    def fake_run(command):
+        calls.append(command)
+        return "frequency(48)=1500012800\n"
+
+    monkeypatch.setattr(SystemStats, "_run", staticmethod(fake_run))
+    stats = SystemStats(FakeSensor(), FakeSensor(), FakeSensor())
+    assert stats._cpu_frequency(fake) == 1500
+    assert calls == [["vcgencmd", "measure_clock", "arm"]]
+
+
+def test_cpu_frequency_falls_back_to_psutil(monkeypatch):
+    fake = types.ModuleType("psutil")
+    fake.cpu_freq = lambda: types.SimpleNamespace(current=2400.0)
+    monkeypatch.setattr(
+        SystemStats, "_run", staticmethod(lambda command: "")
+    )
+    stats = SystemStats(FakeSensor(), FakeSensor(), FakeSensor())
+    assert stats._cpu_frequency(fake) == 2400
+
+
 def test_throttle_flags_are_summarised():
     assert SystemStats._format_throttle(0) == "OK"
     assert SystemStats._format_throttle(0x1) == "UV"

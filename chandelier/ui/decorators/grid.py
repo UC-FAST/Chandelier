@@ -7,6 +7,13 @@ import numpy as np
 
 
 class RuleOfThirds:
+    """Two-thirds composition guide with an optional centre cross.
+
+    The guide is rendered once into a frame-sized black overlay and then
+    blended with :func:`cv2.addWeighted`, so only the thin lines contribute
+    light and the rest of the preview is untouched.  Colours are BGR.
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -23,6 +30,8 @@ class RuleOfThirds:
         self._overlay: np.ndarray | None = None
 
     def _make_overlay(self, frame: np.ndarray) -> np.ndarray:
+        """Rasterise the guides at the frame's current resolution."""
+
         overlay = np.zeros_like(frame)
         height, width = frame.shape[:2]
         for fraction in (1 / 3, 2 / 3):
@@ -43,12 +52,25 @@ class RuleOfThirds:
         return overlay
 
     def decorate(self, frame: np.ndarray) -> None:
+        """Blend the cached guide into ``frame`` in place."""
+
+        # Static geometry, so rebuild only when the resolution changes
+        # (camera switches or a different preview source).
         if self._overlay is None or self._overlay.shape != frame.shape:
             self._overlay = self._make_overlay(frame)
+        # The overlay's background is black, making this equivalent to
+        # drawing the lines at ``alpha`` opacity.
         cv2.addWeighted(self._overlay, self._alpha, frame, 1.0, 0, frame)
 
 
 class CenterMark:
+    """Contrasting crosshair at the image centre.
+
+    Each arm is drawn twice: a thick black line first, then a thinner
+    coloured line on top, which keeps the mark readable over both bright
+    and dark scenes.  Colours are BGR.
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -62,7 +84,11 @@ class CenterMark:
         self._size = max(3, size)
 
     def decorate(self, frame: np.ndarray) -> None:
+        """Draw horizontal and vertical arms centred on the widget."""
+
         cx, cy = self._width // 2, self._height // 2
+        # Black under-stroke first; the coloured 1 px line stays visible on
+        # top of both dark and blown-out frames.
         for start, end in (
             ((cx - self._size, cy), (cx + self._size, cy)),
             ((cx, cy - self._size), (cx, cy + self._size)),

@@ -123,6 +123,39 @@ def test_display_initialises_and_writes_rgb565(monkeypatch):
     assert FakeSpiDev.instances[-1].closed is True
 
 
+def test_display_sends_only_the_changed_region(monkeypatch):
+    _install_fake_hardware(monkeypatch)
+    display = St7735Display(320, 240, load_config().pin)
+    display.init()
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    display.show(frame)
+    writes = FakeSpiDev.instances[-1].writes
+    payloads = [data for kind, data in writes if kind == "bytes2"]
+    assert len(payloads) == 1
+    assert len(payloads[0]) == 320 * 240 * 2
+
+    # An identical frame must not touch SPI at all.
+    display.show(frame)
+    writes = FakeSpiDev.instances[-1].writes
+    assert len([1 for kind, _ in writes if kind == "bytes2"]) == 1
+
+    # A 2x2 change only sends those pixels.
+    frame[10:12, 20:22] = 255
+    display.show(frame)
+    writes = FakeSpiDev.instances[-1].writes
+    payload = next(
+        data for kind, data in writes[::-1] if kind == "bytes2"
+    )
+    assert len(payload) == 2 * 2 * 2
+
+    # Repeating that frame also sends nothing.
+    display.show(frame)
+    writes = FakeSpiDev.instances[-1].writes
+    assert len([1 for kind, _ in writes if kind == "bytes2"]) == 2
+    display.close()
+
+
 def test_gpio_input_maps_press_and_release(monkeypatch):
     _install_fake_hardware(monkeypatch)
     events = []

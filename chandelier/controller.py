@@ -33,6 +33,12 @@ _CONTROLLER_IDS = {
 
 
 class Controller:
+    """Own the render loop and route input between controlled ends.
+
+    Ends advertise themselves through ``EndId`` values; switching happens on
+    GPIO callback threads while frames are rendered on the main thread.
+    """
+
     def __init__(
         self,
         display: Display,
@@ -54,6 +60,8 @@ class Controller:
         self._signal = False
         self._enabled = True
         self._stop_event = threading.Event()
+        # Guards the current index, the switch flag and the last end id; the
+        # render loop and GPIO callbacks access them concurrently.
         self._state_lock = threading.RLock()
         self._shutdown_done = False
         self._preview = bool(argv and "--preview" in argv)
@@ -92,6 +100,12 @@ class Controller:
     # End switching (called from GPIO callback threads)
     # ------------------------------------------------------------------
     def switch_to(self, target: str) -> None:
+        """Schedule a switch to ``target`` from any thread.
+
+        The render loop performs the actual switch after the current frame,
+        because it may be blocked inside the old end's generator.
+        """
+
         target = end_id(target)
         with self._state_lock:
             try:
@@ -113,6 +127,8 @@ class Controller:
         previous.on_exit()
 
     def request_stop(self) -> None:
+        """Ask the render loop to exit; safe from signal/callback threads."""
+
         self._stop_event.set()
         try:
             self.current_end.on_exit()
@@ -123,6 +139,12 @@ class Controller:
     # Messages between ends
     # ------------------------------------------------------------------
     def route_message(self, sender: str, receiver: str, payload: Any) -> None:
+        """Deliver a menu/camera/gallery message to its receiver.
+
+        Payloads stay in their original ad-hoc shapes and are passed by
+        reference: the menu relies on the camera seeing its live options.
+        """
+
         receiver = end_id(receiver)
         sender = end_id(sender) if sender else self.current_end.id
         logger.debug("message %s -> %s", sender, receiver)
@@ -153,9 +175,18 @@ class Controller:
             self._reboot()
         elif command == "shutdown":
             self._shutdown()
+        elif command == "restart_service":
+            self._restart_service()
 
     @staticmethod
     def _run_power_command(commands, action: str) -> None:
+        """Try each command variant in order until one succeeds.
+
+        Passwordless sudo is tried before plain systemctl because the
+        service normally runs unprivileged; a missing command or non-zero
+        exit is logged and the next variant is attempted.
+        """
+
         logger.warning("%s requested", action)
         for command in commands:
             try:
@@ -195,6 +226,16 @@ class Controller:
         )
 
     @staticmethod
+    def _restart_service() -> None:
+        Controller._run_power_command(
+            (
+                ["sudo", "-n", "systemctl", "restart", "cam.service"],
+                ["systemctl", "restart", "cam.service"],
+            ),
+            "service restart",
+        )
+
+    @staticmethod
     def _shutdown() -> None:
         Controller._run_power_command(
             (
@@ -210,6 +251,12 @@ class Controller:
     def handle_action(
         self, action: Action, phase: Phase = Phase.PRESS
     ) -> bool:
+        """Dispatch an input event to the active end.
+
+        Returns whether the end handled it; unknown (action, phase) pairs and
+        gated events are ignored without touching the end.
+        """
+
         spec = resolve_action(action, phase)
         if spec is None:
             return False
@@ -217,10 +264,21 @@ class Controller:
             return False
         return self.current_end.handle_action(action, phase)
 
+    def handle_touch(self, x: float, y: float) -> bool:
+        """Forward a normalized tap to the active screen."""
+
+        try:
+            return bool(self.current_end.handle_touch(x, y))
+        except Exception:
+            logger.exception("touch handling failed")
+            return False
+
     # ------------------------------------------------------------------
     # Signal handling and render loop
     # ------------------------------------------------------------------
     def _install_signal_handlers(self) -> None:
+        # signal.signal only works in the main thread; tests and embedders
+        # may drive the controller from a worker thread.
         if threading.current_thread() is not threading.main_thread():
             return
         try:
@@ -233,6 +291,13 @@ class Controller:
         self.request_stop()
 
     def main_loop(self, localization=None) -> None:
+        """Render frames until stopped, re-entering the current end on switch.
+
+        Ends yield frames from ``main_loop()``.  A switch request breaks out
+        of the generator and the outer loop calls ``on_enter`` on the new
+        end, passing the id of the end that was left.
+        """
+
         self._install_signal_handlers()
         try:
             while not self._stop_event.is_set():
@@ -241,6 +306,8 @@ class Controller:
                 for frame in end.main_loop():
                     if self._stop_event.is_set():
                         break
+                    # Consume the switch flag under the lock so a concurrent
+                    # switch_to() cannot be lost between check and clear.
                     with self._state_lock:
                         switched = self._signal
                         if switched:
@@ -249,7 +316,8 @@ class Controller:
                         break
 
                     # The marker maps sound directions onto the camera image,
-                    # so it is only meaningful on the camera screen.
+                    # so it is only meaningful on the camera screen.  The
+                    # generation check avoids re-adding the same snapshot.
                     if (
                         localization is not None
                         and end.id == EndId.CAMERA.value
@@ -264,6 +332,8 @@ class Controller:
                             self._last_marker_generation = snapshot.generation
                             sources = snapshot.sources
                             marker_config = self._config.marker
+                            # Single mode shows the first source only;
+                            # multiple mode is capped by configuration.
                             if marker_config.mode == "single":
                                 sources = sources[:1]
                             else:
@@ -304,6 +374,7 @@ class Controller:
                         )
                         cv2.waitKey(5)
 
+                    # A preview failure must never take the display down.
                     if self._preview_server is not None:
                         try:
                             self._preview_server.publish(frame)
@@ -319,6 +390,8 @@ class Controller:
             self.shutdown()
 
     def shutdown(self) -> None:
+        """Release display/preview resources; safe to call more than once."""
+
         if self._shutdown_done:
             return
         self._shutdown_done = True

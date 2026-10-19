@@ -7,32 +7,35 @@
                     "id": "camera_settings",
                     "content": "Camera Settings",
                     "type": "menu",
-                    "value": "camera_settings"
+                    "value": "camera_settings",
+                    "icon": "settings"
                 },
                 {
                     "id": "gallery",
                     "content": "Gallery",
                     "type": "irq",
-                    "value": "gallery"
+                    "value": "gallery",
+                    "icon": "image"
                 },
                 {
                     "id": "localizer",
                     "content": "Localizer",
                     "type": "menu",
-                    "icon": "sliders",
+                    "icon": "sound",
                     "value": "localizer"
                 },
                 {
                     "id": "system_monitor",
                     "content": "System Monitor",
                     "type": "irq",
-                    "value": "system_monitor"
+                    "value": "system_monitor",
+                    "icon": "cpu"
                 },
                 {
                     "id": "system",
                     "content": "System",
                     "type": "menu",
-                    "icon": "display",
+                    "icon": "settings",
                     "value": "system"
                 }
             ]
@@ -44,27 +47,30 @@
                     "id": "exposure",
                     "content": "Exposure",
                     "type": "menu",
-                    "value": "exposure"
+                    "value": "exposure",
+                    "icon": "sun"
                 },
                 {
                     "id": "focus",
                     "content": "Focus",
                     "type": "menu",
-                    "value": "focus"
+                    "value": "focus",
+                    "icon": "focus"
                 },
                 {
                     "id": "white_balance",
                     "content": "White Balance",
                     "type": "menu",
-                    "value": "white_balance"
+                    "value": "white_balance",
+                    "icon": "wb"
                 },
                 {
                     "id": "hdr",
                     "content": "HDR",
                     "type": "option",
                     "value": {
-                        "content": "Off",
-                        "value": 0
+                        "content": "MultiExposure",
+                        "value": 2
                     },
                     "options": [
                         {
@@ -87,7 +93,13 @@
                             "content": "Night",
                             "value": 4
                         }
-                    ]
+                    ],
+                    "enable_if": {
+                        "id": "auto_expose",
+                        "value": true
+                    },
+                    "enable": true,
+                    "icon": "hdr"
                 },
                 {
                     "id": "delay",
@@ -96,13 +108,14 @@
                     "value": 0,
                     "min": 0,
                     "max": 30,
-                    "step": 1
+                    "step": 1,
+                    "icon": "timer"
                 },
                 {
                     "id": "capture",
                     "content": "Capture",
                     "type": "menu",
-                    "icon": "timer",
+                    "icon": "burst",
                     "value": "capture"
                 },
                 {
@@ -173,7 +186,8 @@
                                 2592
                             ]
                         }
-                    ]
+                    ],
+                    "icon": "frame"
                 },
                 {
                     "id": "display",
@@ -221,25 +235,29 @@
                             "content": "JPEG",
                             "value": "jpeg"
                         }
-                    ]
+                    ],
+                    "icon": "file"
                 },
                 {
                     "id": "save_metadata",
                     "content": "Save Metadata",
                     "type": "bool",
-                    "value": false
+                    "value": false,
+                    "icon": "tag"
                 },
                 {
                     "id": "dng_enable",
                     "content": "DNG Enable",
                     "type": "bool",
-                    "value": false
+                    "value": false,
+                    "icon": "image"
                 },
                 {
                     "id": "watermark",
                     "content": "Watermark",
                     "type": "bool",
-                    "value": false
+                    "value": false,
+                    "icon": "watermark"
                 }
             ]
         },
@@ -260,28 +278,116 @@
                         "metering_mode",
                         "flicker",
                         "constraint_mode"
-                    ]
+                    ],
+                    "icon": "sun"
                 },
                 {
                     "id": "show_hist",
                     "content": "Show Histogram",
                     "type": "bool",
-                    "value": false
+                    "value": true,
+                    "icon": "hist"
                 },
                 {
                     "id": "exposure_time",
                     "content": "Exposure Time",
-                    "type": "numeral",
-                    "value": 1,
-                    "min": 1,
-                    "max": 66666,
-                    "step": 10000,
-                    "step_options": [
-                        100,
-                        1000,
-                        10000
+                    "type": "option",
+                    "value": {
+                        "content": "1/25",
+                        "value": 40000
+                    },
+                    "enable": false,
+                    "options": [
+                        {
+                            "content": "1/8000",
+                            "value": 125
+                        },
+                        {
+                            "content": "1/4000",
+                            "value": 250
+                        },
+                        {
+                            "content": "1/2000",
+                            "value": 500
+                        },
+                        {
+                            "content": "1/1000",
+                            "value": 1000
+                        },
+                        {
+                            "content": "1/500",
+                            "value": 2000
+                        },
+                        {
+                            "content": "1/250",
+                            "value": 4000
+                        },
+                        {
+                            "content": "1/125",
+                            "value": 8000
+                        },
+                        {
+                            "content": "1/60",
+                            "value": 16667
+                        },
+                        {
+                            "content": "1/30",
+                            "value": 33333
+                        },
+                        {
+                            "content": "1/25",
+                            "value": 40000
+                        },
+                        {
+                            "content": "1/20",
+                            "value": 50000
+                        },
+                        {
+                            "content": "1/15",
+                            "value": 66666
+                        },
+                        {
+                            "content": "1/10 (Still)",
+                            "value": 100000
+                        },
+                        {
+                            "content": "1/8 (Still)",
+                            "value": 125000
+                        },
+                        {
+                            "content": "1/4 (Still)",
+                            "value": 250000
+                        },
+                        {
+                            "content": "1/2 (Still)",
+                            "value": 500000
+                        },
+                        {
+                            "content": "1s (Still)",
+                            "value": 1000000
+                        },
+                        {
+                            "content": "2s (Still)",
+                            "value": 2000000
+                        },
+                        {
+                            "content": "4s (Still)",
+                            "value": 4000000
+                        },
+                        {
+                            "content": "8s (Still)",
+                            "value": 8000000
+                        },
+                        {
+                            "content": "15s (Still)",
+                            "value": 15000000
+                        },
+                        {
+                            "content": "30s (Still)",
+                            "value": 30000000
+                        }
                     ],
-                    "enable": false
+                    "icon": "shutter"
                 },
                 {
                     "id": "analogue_gain",
@@ -290,12 +396,14 @@
                     "value": 16,
                     "min": 1,
                     "max": 16,
-                    "step": 1,
+                    "step": 0.5,
                     "step_options": [
-                        1,
-                        10
+                        0.1,
+                        0.5,
+                        1
                     ],
-                    "enable": false
+                    "enable": false,
+                    "icon": "gain"
                 },
                 {
                     "id": "exposure_mode",
@@ -323,7 +431,8 @@
                             "value": 3
                         }
                     ],
-                    "enable": true
+                    "enable": true,
+                    "icon": "sliders"
                 },
                 {
                     "id": "metering_mode",
@@ -351,7 +460,8 @@
                             "value": 3
                         }
                     ],
-                    "enable": true
+                    "enable": true,
+                    "icon": "crosshair"
                 },
                 {
                     "id": "constraint_mode",
@@ -379,14 +489,16 @@
                             "value": 3
                         }
                     ],
-                    "enable": true
+                    "enable": true,
+                    "icon": "lock"
                 },
                 {
                     "id": "flicker",
                     "content": "Flicker",
                     "type": "menu",
                     "value": "flicker_menu",
-                    "enable": true
+                    "enable": true,
+                    "icon": "flicker"
                 }
             ]
         },
@@ -410,7 +522,8 @@
                             "content": "Manual",
                             "value": 1
                         }
-                    ]
+                    ],
+                    "icon": "flicker"
                 },
                 {
                     "id": "flicker_period",
@@ -429,7 +542,8 @@
                             "content": "60Hz",
                             "value": 8333
                         }
-                    ]
+                    ],
+                    "icon": "timer"
                 }
             ]
         },
@@ -494,7 +608,7 @@
                     "id": "af_speed",
                     "content": "AF Speed",
                     "type": "option",
-                    "icon": "focus",
+                    "icon": "speed",
                     "value": {
                         "content": "Normal",
                         "value": 0
@@ -514,7 +628,7 @@
                     "id": "af_range",
                     "content": "AF Range",
                     "type": "option",
-                    "icon": "focus",
+                    "icon": "frame",
                     "value": {
                         "content": "Normal",
                         "value": 0
@@ -550,13 +664,14 @@
                     "id": "awb",
                     "content": "Auto White Balance",
                     "type": "bool",
-                    "value": false,
+                    "value": true,
                     "set_enable": [
                         "awb_mode"
                     ],
                     "set_disable": [
                         "color_gains"
-                    ]
+                    ],
+                    "icon": "wb"
                 },
                 {
                     "id": "awb_mode",
@@ -600,14 +715,16 @@
                             "value": 7
                         }
                     ],
-                    "enable": false
+                    "enable": true,
+                    "icon": "wb"
                 },
                 {
                     "id": "color_gains",
                     "content": "Color Gains",
                     "type": "menu",
                     "value": "color_gains",
-                    "enable": true
+                    "enable": false,
+                    "icon": "droplet"
                 }
             ]
         },
@@ -618,27 +735,31 @@
                     "id": "red_gain",
                     "content": "Red Gain",
                     "type": "numeral",
-                    "value": 0,
-                    "min": 0,
+                    "value": 1.0,
+                    "min": 0.1,
                     "max": 32,
-                    "step": 1,
+                    "step": 0.1,
                     "step_options": [
                         0.1,
+                        0.5,
                         1
-                    ]
+                    ],
+                    "icon": "droplet"
                 },
                 {
                     "id": "blue_gain",
                     "content": "Blue Gain",
                     "type": "numeral",
-                    "value": 0,
-                    "min": 0,
+                    "value": 1.0,
+                    "min": 0.1,
                     "max": 32,
-                    "step": 1,
+                    "step": 0.1,
                     "step_options": [
                         0.1,
+                        0.5,
                         1
-                    ]
+                    ],
+                    "icon": "droplet"
                 }
             ]
         },
@@ -650,14 +771,14 @@
                     "content": "Rule of Thirds",
                     "type": "bool",
                     "icon": "grid",
-                    "value": false
+                    "value": true
                 },
                 {
                     "id": "show_center",
                     "content": "Center Mark",
                     "type": "bool",
-                    "icon": "focus",
-                    "value": false
+                    "icon": "crosshair",
+                    "value": true
                 },
                 {
                     "id": "show_zebra",
@@ -682,8 +803,8 @@
                     "type": "option",
                     "icon": "monitor",
                     "value": {
-                        "content": "Top",
-                        "value": "top"
+                        "content": "Top + Bottom",
+                        "value": "top_bottom"
                     },
                     "options": [
                         {
@@ -691,12 +812,8 @@
                             "value": "off"
                         },
                         {
-                            "content": "Top",
-                            "value": "top"
-                        },
-                        {
-                            "content": "Bottom",
-                            "value": "bottom"
+                            "content": "Top + Bottom",
+                            "value": "top_bottom"
                         },
                         {
                             "content": "Sides",
@@ -798,13 +915,18 @@
                         0.1,
                         0.5
                     ],
-                    "format": "ev"
+                    "format": "ev",
+                    "enable_if": {
+                        "id": "auto_expose",
+                        "value": true
+                    },
+                    "enable": true
                 },
                 {
                     "id": "ae_lock",
                     "content": "AE Lock",
                     "type": "bool",
-                    "icon": "sliders",
+                    "icon": "lock",
                     "value": false
                 },
                 {
@@ -818,7 +940,7 @@
                     "id": "saturation",
                     "content": "Saturation",
                     "type": "numeral",
-                    "icon": "sliders",
+                    "icon": "droplet",
                     "value": 1.0,
                     "min": 0.0,
                     "max": 2.0,
@@ -828,7 +950,7 @@
                     "id": "contrast",
                     "content": "Contrast",
                     "type": "numeral",
-                    "icon": "sliders",
+                    "icon": "contrast",
                     "value": 1.0,
                     "min": 0.0,
                     "max": 2.0,
@@ -838,7 +960,7 @@
                     "id": "sharpness",
                     "content": "Sharpness",
                     "type": "numeral",
-                    "icon": "sliders",
+                    "icon": "sharp",
                     "value": 1.0,
                     "min": 0.0,
                     "max": 4.0,
@@ -901,7 +1023,7 @@
                     "id": "loc_n_sources",
                     "content": "Sources",
                     "type": "numeral",
-                    "icon": "sliders",
+                    "icon": "sound",
                     "value": 1,
                     "min": 1,
                     "max": 8,
@@ -911,8 +1033,8 @@
                     "id": "loc_confidence",
                     "content": "Confidence",
                     "type": "numeral",
-                    "icon": "sliders",
-                    "value": 0.03,
+                    "icon": "signal",
+                    "value": 0.01,
                     "min": 0.0,
                     "max": 1.0,
                     "step": 0.01
@@ -921,7 +1043,7 @@
                     "id": "loc_mic_rotation",
                     "content": "Mic Rotation",
                     "type": "numeral",
-                    "icon": "focus",
+                    "icon": "angle",
                     "value": 0,
                     "min": 0,
                     "max": 359,
@@ -932,7 +1054,7 @@
                     "id": "loc_marker_fov",
                     "content": "Camera FOV",
                     "type": "numeral",
-                    "icon": "focus",
+                    "icon": "frame",
                     "value": 82,
                     "min": 1,
                     "max": 179,
@@ -947,7 +1069,7 @@
                     "id": "loc_marker_azimuth",
                     "content": "Marker Yaw",
                     "type": "numeral",
-                    "icon": "focus",
+                    "icon": "angle",
                     "value": 0,
                     "min": 0,
                     "max": 359,
@@ -962,7 +1084,7 @@
                     "id": "loc_marker_elevation",
                     "content": "Marker Elev",
                     "type": "numeral",
-                    "icon": "focus",
+                    "icon": "angle",
                     "value": -6,
                     "min": -90,
                     "max": 90,
@@ -977,7 +1099,7 @@
                     "id": "loc_marker_x_gain",
                     "content": "X Gain",
                     "type": "numeral",
-                    "icon": "sliders",
+                    "icon": "gain",
                     "value": 0.7,
                     "min": 0.0,
                     "max": 3.0,
@@ -987,8 +1109,8 @@
                     "id": "loc_marker_y_gain",
                     "content": "Y Gain",
                     "type": "numeral",
-                    "icon": "sliders",
-                    "value": 2.7755575615628914e-17,
+                    "icon": "gain",
+                    "value": 0.0,
                     "min": 0.0,
                     "max": 3.0,
                     "step": 0.1
@@ -997,7 +1119,7 @@
                     "id": "loc_marker_mic_x",
                     "content": "Mic X",
                     "type": "numeral",
-                    "icon": "focus",
+                    "icon": "mic",
                     "value": 0.0,
                     "min": -30.0,
                     "max": 30.0,
@@ -1013,7 +1135,7 @@
                     "id": "loc_marker_mic_y",
                     "content": "Mic Y",
                     "type": "numeral",
-                    "icon": "focus",
+                    "icon": "mic",
                     "value": 0.7,
                     "min": -30.0,
                     "max": 30.0,
@@ -1029,7 +1151,7 @@
                     "id": "loc_marker_mic_z",
                     "content": "Mic Z",
                     "type": "numeral",
-                    "icon": "focus",
+                    "icon": "mic",
                     "value": 0.0,
                     "min": -30.0,
                     "max": 30.0,
@@ -1045,7 +1167,7 @@
                     "id": "loc_talk_distance",
                     "content": "Talk Distance",
                     "type": "numeral",
-                    "icon": "timer",
+                    "icon": "ruler",
                     "value": 0.0,
                     "min": 0.0,
                     "max": 500.0,
@@ -1056,7 +1178,7 @@
                     "id": "loc_speech_threshold",
                     "content": "Speech Level",
                     "type": "numeral",
-                    "icon": "sliders",
+                    "icon": "sound",
                     "value": 0.0,
                     "min": 0.0,
                     "max": 1.0,
@@ -1066,7 +1188,7 @@
                     "id": "loc_max_chunks",
                     "content": "Max Chunks",
                     "type": "numeral",
-                    "icon": "timer",
+                    "icon": "memory",
                     "value": 5,
                     "min": 1,
                     "max": 50,
@@ -1076,7 +1198,7 @@
                     "id": "loc_delay_max",
                     "content": "Delay Max",
                     "type": "numeral",
-                    "icon": "timer",
+                    "icon": "clock",
                     "value": 0.0,
                     "min": 0.0,
                     "max": 16.0,
@@ -1101,7 +1223,7 @@
                     "id": "language",
                     "content": "Language",
                     "type": "option",
-                    "icon": "display",
+                    "icon": "globe",
                     "value": {
                         "content": "简体中文",
                         "value": "zh_CN"
@@ -1152,8 +1274,12 @@
                             "value": "classic"
                         },
                         {
-                            "content": "Windows XP",
-                            "value": "xp_luna"
+                            "content": "Ubuntu",
+                            "value": "ubuntu"
+                        },
+                        {
+                            "content": "Liquid Glass",
+                            "value": "liquid_glass"
                         },
                         {
                             "content": "Windows 2000",
@@ -1166,10 +1292,6 @@
                         {
                             "content": "Aero",
                             "value": "aero"
-                        },
-                        {
-                            "content": "Windows 10",
-                            "value": "win10"
                         }
                     ]
                 },
@@ -1177,9 +1299,18 @@
                     "id": "web_server",
                     "content": "Web Server",
                     "type": "bool",
-                    "icon": "monitor",
+                    "icon": "server",
                     "receiver": "camera",
                     "value": true
+                },
+                {
+                    "id": "restart_service",
+                    "content": "Restart Service",
+                    "type": "msg",
+                    "icon": "service",
+                    "badge": "RESTART",
+                    "receiver": "controller",
+                    "value": "restart_service"
                 },
                 {
                     "id": "power",
@@ -1220,14 +1351,16 @@
                     "id": "show_hist",
                     "content": "Show Hist",
                     "type": "bool",
-                    "value": false
+                    "value": true,
+                    "icon": "hist"
                 },
                 {
                     "id": "delete",
                     "content": "Delete",
                     "type": "msg",
                     "receiver": "gallery",
-                    "value": "delete"
+                    "value": "delete",
+                    "icon": "delete"
                 }
             ]
         },
@@ -1252,7 +1385,7 @@
                     "id": "seek_seconds",
                     "content": "Seek Step",
                     "type": "numeral",
-                    "icon": "play",
+                    "icon": "seek",
                     "value": 5,
                     "min": 1,
                     "max": 60,

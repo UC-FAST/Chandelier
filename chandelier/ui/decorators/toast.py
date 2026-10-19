@@ -23,6 +23,15 @@ _ACCENT = (255, 0, 0)
 
 
 class Toast:
+    """Transient message anchored to the bottom centre of the frame.
+
+    State is just the current text and an expiry timestamp; the clock is
+    injectable so tests can advance time without sleeping.  Drawing goes to
+    a scratch buffer and is composited through a non-zero mask, which keeps
+    the black background transparent and allows the fade-out at the end of
+    the duration.
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -80,9 +89,16 @@ class Toast:
         return self._visible_at(self._clock())
 
     def _visible_at(self, now: float) -> bool:
+        """Check visibility against an explicit timestamp.
+
+        Kept separate from the ``visible`` property so ``decorate`` can
+        evaluate the clock only once per frame.
+        """
+
         if not self._text:
             return False
         if self._expires_at <= 0:
+            # Zero means "sticky" (duration 0 in set_text).
             return True
         return now < self._expires_at
 
@@ -119,12 +135,16 @@ class Toast:
         return self._renderer.measure(tr(text), self._font_height)[0]
 
     def _fit_text(self, text: str, max_width: int) -> str:
+        """Translate and truncate ``text`` to fit ``max_width`` pixels."""
+
         text = tr(text)
         if max_width <= 0 or not text:
             return ""
         if self._text_width(text) <= max_width:
             return text
 
+        # Shorten one character at a time; proportional glyph widths make a
+        # character-count estimate unreliable.
         suffix = ".."
         while text:
             text = text[:-1]
@@ -133,6 +153,13 @@ class Toast:
         return ""
 
     def decorate(self, frame: np.ndarray, rotate: int = 0) -> None:
+        """Draw the toast if it is still visible.
+
+        ``rotate`` follows the preview rotation; the scratch buffer is
+        rotated rather than the frame, and the result is discarded if the
+        rotated resolution does not match.
+        """
+
         now = self._clock()
         self._is_update = False
         if not self._visible_at(now):
@@ -165,6 +192,9 @@ class Toast:
         )
         text_x = max(0, (frame_width - text_width) // 2)
 
+        # Render into a black scratch buffer so the finished box can be
+        # composited through a mask; drawing directly would paint a solid
+        # rectangle over the preview and defeat the translucency.
         sketch = np.zeros_like(frame)
         cv2.rectangle(
             sketch, (x0, y0), (x1, y1), _BACKGROUND, -1, cv2.LINE_AA
@@ -201,9 +231,13 @@ class Toast:
 
         alpha = self._alpha
         if self._expires_at > 0:
+            # Linear fade over the final 250 ms; the clamp prevents a
+            # negative multiplier if the frame arrives slightly late.
             remaining = self._expires_at - now
             alpha *= max(0.0, min(1.0, remaining / 0.25))
 
+        # Non-black pixels are exactly the toast; masking avoids tinting
+        # the rest of the scene when ``alpha`` is applied.
         mask = np.any(sketch != 0, axis=2)
         if not mask.any():
             return

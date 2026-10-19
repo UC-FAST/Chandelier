@@ -1,4 +1,5 @@
 import os
+import time
 
 import cv2
 import numpy as np
@@ -21,6 +22,141 @@ def test_discovery_and_frame_loading(tmp_path):
     frame = browser.get_current_frame()
     assert frame.shape == (240, 320, 3)
     assert browser.get_current_file_name() in {"a.png", "b.png"}
+
+
+def test_delete_removes_its_disk_cache(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    media = tmp_path / "media"
+    media.mkdir()
+    _image(media / "photo.jpg", 200)
+
+    browser = MediaBrowser(str(media), 320, 240)
+    browser.get_current_frame()
+    cache_dir = browser._source_cache_dir(str(media / "photo.jpg"))
+    assert cache_dir is not None
+    assert os.listdir(cache_dir)
+
+    assert browser.delete_current() is True
+    assert not (media / "photo.jpg").exists()
+    assert not os.path.exists(cache_dir)
+
+
+def test_old_cache_layout_is_cleared_once(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    root = home / ".cache" / "chandelier" / "gallery"
+    old = root / "ab" / "old.jpg"
+    old.parent.mkdir(parents=True)
+    old.write_bytes(b"stale")
+    media = tmp_path / "media"
+    media.mkdir()
+    _image(media / "photo.jpg", 10)
+
+    MediaBrowser(str(media), 320, 240)
+    assert not old.exists()
+    assert (root / ".layout-v3").exists()
+
+    keep = root / "sources" / "aa" / "a" / "x.jpg"
+    keep.parent.mkdir(parents=True)
+    keep.write_bytes(b"keep")
+    MediaBrowser(str(media), 320, 240)
+    assert keep.exists()
+
+
+def test_decode_reports_progress_and_clears_on_success(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    media = tmp_path / "media"
+    media.mkdir()
+    path = media / "photo.png"
+    _image(path, 120)
+
+    browser = MediaBrowser(str(media), 320, 240)
+    calls = []
+    update = browser._update_load_progress
+
+    def record(index, stage, read, total, started):
+        calls.append((stage, read, total))
+        update(index, stage, read, total, started)
+
+    browser._update_load_progress = record
+    assert browser._decode_image(str(path), index=0) is not None
+    assert calls and calls[-1][0] == "decode"
+    assert any(
+        stage == "read" and read == total
+        for stage, read, total in calls
+    )
+    assert browser.get_load_progress() is None
+
+
+def test_failed_decode_is_marked_and_not_retried(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    media = tmp_path / "media"
+    media.mkdir()
+    bad = media / "bad.png"
+    bad.write_bytes(b"not an image")
+
+    browser = MediaBrowser(str(media), 320, 240)
+    assert browser._decode_image(str(bad), index=0) is None
+
+    progress = browser.get_load_progress()
+    assert progress is not None
+    assert progress["stage"] == "error"
+
+    generation = browser._load_generation
+    browser._load_current_async()
+    assert browser._load_generation == generation
+
+
+def test_large_images_are_not_prefetched(tmp_path, monkeypatch):
+    from chandelier.media import library as library_module
+
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    media = tmp_path / "media"
+    media.mkdir()
+    _image(media / "small.png", 10)
+    (media / "large.png").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(library_module, "_PREFETCH_MAX_BYTES", 1024)
+
+    browser = MediaBrowser(str(media), 320, 240)
+    indices = {
+        browser.get_media_info(i)["path"]: i
+        for i in range(browser.total_media())
+    }
+    assert browser._can_prefetch(indices[str(media / "small.png")])
+    assert not browser._can_prefetch(indices[str(media / "large.png")])
+
+
+def test_stale_decode_is_aborted(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    media = tmp_path / "media"
+    media.mkdir()
+
+    browser = MediaBrowser(str(media), 320, 240)
+    path = media / "big.png"
+    path.write_bytes(b"x" * 2048)
+    generation = browser._load_generation
+    browser._load_generation += 1
+
+    assert (
+        browser._decode_image(
+            str(path), index=0, generation=generation
+        )
+        is None
+    )
+    assert browser.get_load_progress() is None
 
 
 def test_navigation_and_position(tmp_path):
@@ -155,3 +291,18 @@ def test_toggle_play_pause_returns_state(tmp_path):
     browser = MediaBrowser(str(tmp_path), 320, 240)
     assert browser.toggle_play_pause() is True
     assert browser.toggle_play_pause() is False
+
+
+def test_async_current_frame_becomes_ready(tmp_path):
+    _image(tmp_path / "a.png", 25)
+    browser = MediaBrowser(str(tmp_path), 320, 240)
+    frame = browser.get_current_frame(wait=False)
+    assert frame.shape == (240, 320, 3)
+
+    deadline = time.monotonic() + 10.0
+    while not browser.is_current_frame_ready():
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(0.01)
+    assert browser.is_current_frame_ready()
+    assert browser.get_current_frame().shape == (240, 320, 3)

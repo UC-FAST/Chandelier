@@ -42,6 +42,14 @@ _LANGUAGE_ALIASES = {
 
 
 def normalize_language(value: Any) -> str:
+    """Map a language tag or alias to a supported catalog id.
+
+    Matching ignores case and treats ``-`` like ``_``, so values such as
+    ``zh-Hans`` or ``EN`` resolve without special handling.  Unknown or
+    empty input falls back to :data:`DEFAULT_LANGUAGE` instead of raising,
+    so a hand-edited or corrupt menu file cannot break startup.
+    """
+
     text = str(value or "").strip().lower().replace("-", "_")
     return _LANGUAGE_ALIASES.get(text, DEFAULT_LANGUAGE)
 
@@ -63,6 +71,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Record": "录像",
         "Localizer": "声源定位",
         "Gallery": "图库",
+        "Gallery preview": "图库预览",
         "Player": "播放器",
         "Flicker": "闪烁",
         "System": "系统",
@@ -76,6 +85,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Shut down system?": "关闭系统？",
         "Reboot System": "重启系统",
         "Reboot system?": "重启系统？",
+        "Restart Service": "重启服务",
+        "Restart service?": "重启服务？",
+        "RESTART": "重启",
         "OK = YES    X = NO": "OK = 是    X = 否",
         # Camera settings / exposure
         "Auto Expose": "自动曝光",
@@ -110,6 +122,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Watermark": "水印",
         # Display / capture / manual / record
         "Theme": "主题",
+        "Liquid Glass": "液态玻璃",
         "Rule of Thirds": "三分构图线",
         "Center Mark": "中心标记",
         "Zebra": "斑马纹",
@@ -118,6 +131,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Bar Position": "状态栏位置",
         "Top": "顶部",
         "Bottom": "底部",
+        "Top + Bottom": "上下",
         "Sides": "两侧",
         "Mode": "模式",
         "Burst Count": "连拍张数",
@@ -260,6 +274,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "BRT": "亮度",
         "Empty": "空",
         "Loading": "加载中",
+        "Decoding": "解码中",
+        "Load failed": "加载失败",
+        "remaining": "剩余",
         "LOOP": "循环",
         # Web preview
         "Camera": "相机",
@@ -276,6 +293,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "stream connected": "已连接",
         "reconnecting...": "重连中…",
         "Live preview": "实时画面",
+        "Refresh": "刷新",
+        "No media": "暂无媒体",
+        "Previous": "上一张",
+        "Next": "下一张",
+        "Close": "关闭",
+        "Download": "下载",
+        "Manage": "管理",
+        "Done": "完成",
+        "Select all": "全选",
+        "Clear": "清空",
+        "Selected": "已选",
+        "Delete selected items?": "删除选中的图片？",
+        "Deleted": "已删除",
+        "Delete failed": "删除失败",
     },
     "zh_TW": {
         "Settings": "設定",
@@ -290,6 +321,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Record": "錄影",
         "Localizer": "聲源定位",
         "Gallery": "相簿",
+        "Gallery preview": "圖庫預覽",
         "Player": "播放器",
         "Flicker": "閃爍",
         "System": "系統",
@@ -303,6 +335,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Shut down system?": "關閉系統？",
         "Reboot System": "重新開機",
         "Reboot system?": "重新開機？",
+        "Restart Service": "重新啟動服務",
+        "Restart service?": "重新啟動服務？",
+        "RESTART": "重新啟動",
         "OK = YES    X = NO": "OK = 是    X = 否",
         "Auto Expose": "自動曝光",
         "Auto Exposure Mode": "自動曝光模式",
@@ -335,6 +370,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "DNG Enable": "啟用 DNG",
         "Watermark": "浮水印",
         "Theme": "主題",
+        "Liquid Glass": "液態玻璃",
         "Rule of Thirds": "三分構圖線",
         "Center Mark": "中心標記",
         "Zebra": "斑馬紋",
@@ -343,6 +379,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Bar Position": "狀態列位置",
         "Top": "頂部",
         "Bottom": "底部",
+        "Top + Bottom": "上下",
         "Sides": "兩側",
         "Mode": "模式",
         "Burst Count": "連拍張數",
@@ -480,6 +517,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "BRT": "亮度",
         "Empty": "空",
         "Loading": "載入中",
+        "Decoding": "解碼中",
+        "Load failed": "載入失敗",
+        "remaining": "剩餘",
         "LOOP": "循環",
         # Web preview
         "Camera": "相機",
@@ -496,6 +536,20 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "stream connected": "已連線",
         "reconnecting...": "重新連線中…",
         "Live preview": "即時畫面",
+        "Refresh": "重新整理",
+        "No media": "尚無媒體",
+        "Previous": "上一張",
+        "Next": "下一張",
+        "Close": "關閉",
+        "Download": "下載",
+        "Manage": "管理",
+        "Done": "完成",
+        "Select all": "全選",
+        "Clear": "清除",
+        "Selected": "已選",
+        "Delete selected items?": "刪除選取的圖片？",
+        "Deleted": "已刪除",
+        "Delete failed": "刪除失敗",
     },
     "ru": {
         "Settings": "Настройки",
@@ -510,6 +564,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Record": "Запись",
         "Localizer": "Локализация звука",
         "Gallery": "Галерея",
+        "Gallery preview": "Просмотр галереи",
         "Player": "Плеер",
         "Flicker": "Мерцание",
         "System": "Система",
@@ -523,6 +578,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Shut down system?": "Выключить систему?",
         "Reboot System": "Перезагрузить систему",
         "Reboot system?": "Перезагрузить систему?",
+        "Restart Service": "Перезапустить службу",
+        "Restart service?": "Перезапустить службу?",
+        "RESTART": "ПЕРЕЗАПУСК",
         "OK = YES    X = NO": "OK = ДА    X = НЕТ",
         "Auto Expose": "Автоэкспозиция",
         "Auto Exposure Mode": "Режим автоэкспозиции",
@@ -555,6 +613,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "DNG Enable": "Включить DNG",
         "Watermark": "Водяной знак",
         "Theme": "Тема",
+        "Liquid Glass": "Жидкое стекло",
         "Rule of Thirds": "Сетка третей",
         "Center Mark": "Центральная метка",
         "Zebra": "Зебра",
@@ -563,6 +622,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "Bar Position": "Положение панели",
         "Top": "Сверху",
         "Bottom": "Снизу",
+        "Top + Bottom": "Сверху и снизу",
         "Sides": "По бокам",
         "Mode": "Режим",
         "Burst Count": "Кадров в серии",
@@ -700,6 +760,9 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "BRT": "ЯРК.",
         "Empty": "Пусто",
         "Loading": "Загрузка",
+        "Decoding": "Декодирование",
+        "Load failed": "Ошибка загрузки",
+        "remaining": "осталось",
         "LOOP": "ПОВТОР",
         # Web preview
         "Camera": "Камера",
@@ -716,11 +779,27 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "stream connected": "подключено",
         "reconnecting...": "переподключение…",
         "Live preview": "Живой предпросмотр",
+        "Refresh": "Обновить",
+        "No media": "Нет медиафайлов",
+        "Previous": "Предыдущий",
+        "Next": "Следующий",
+        "Close": "Закрыть",
+        "Download": "Скачать",
+        "Manage": "Управление",
+        "Done": "Готово",
+        "Select all": "Выбрать все",
+        "Clear": "Снять выбор",
+        "Selected": "Выбрано",
+        "Delete selected items?": "Удалить выбранные элементы?",
+        "Deleted": "Удалено",
+        "Delete failed": "Не удалось удалить",
     },
 }
 
 
 class Translator:
+    """Look up English UI strings in the active language catalog."""
+
     def __init__(self, language: str = DEFAULT_LANGUAGE):
         self._language = normalize_language(language)
 
@@ -729,6 +808,12 @@ class Translator:
         return self._language
 
     def set_language(self, language: Any) -> str:
+        """Switch the active catalog and return the normalized id.
+
+        Only an actual change is logged; callers reapply the persisted menu
+        value on every refresh, and that should stay quiet.
+        """
+
         normalized = normalize_language(language)
         if normalized != self._language:
             logger.info("UI language set to %s", normalized)
@@ -736,9 +821,12 @@ class Translator:
         return self._language
 
     def __call__(self, text: Any) -> str:
+        """Translate ``text``, returning it unchanged when no entry exists."""
+
         if text is None:
             return ""
         text = str(text)
+        # English is the canonical key language, so no lookup is needed.
         if self._language == "en" or not text:
             return text
         return TRANSLATIONS.get(self._language, {}).get(text, text)
@@ -748,12 +836,16 @@ translator = Translator()
 
 
 def tr(text: Any) -> str:
+    """Translate through the process-wide :data:`translator`."""
+
     return translator(text)
 
 
 def language_from_options(tree: dict[str, Any] | None) -> str | None:
     """Find the persisted ``language`` option value in a raw menu tree."""
 
+    # Raw menus nest group -> section -> option dictionaries.  Tolerate any
+    # missing or malformed level so reading a partial file never raises.
     if not isinstance(tree, dict):
         return None
     for sections in tree.values():
@@ -768,6 +860,8 @@ def language_from_options(tree: dict[str, Any] | None) -> str | None:
                 if option.get("id") != "language":
                     continue
                 value = option.get("value")
+                # Option values may be wrapped as {"content", "value"}, as
+                # menu choices are in the persisted schema.
                 if isinstance(value, dict):
                     value = value.get("value")
                 if value is not None:

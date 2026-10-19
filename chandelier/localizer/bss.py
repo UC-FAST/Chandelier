@@ -1,3 +1,13 @@
+"""DUET blind source separation via attenuation-delay histograms.
+
+Implements the Degenerate Unmixing Estimation Technique (DUET) for two
+microphone channels.  A weighted 2-D histogram of symmetric attenuation
+and relative delay is built from the STFT, peaks in that histogram seed
+per-source masks, and each time-frequency bin is assigned to the closest
+source prototype before synthesis back to the time domain.  The flow
+follows the original CASA495 reference implementation.
+"""
+
 import logging
 
 import numpy as np
@@ -6,6 +16,7 @@ from chandelier.localizer.peaks import find_peak_indices
 
 
 logger = logging.getLogger(__name__)
+# Guards the attenuation ratio and logarithms for silent spectral bins.
 EPSILON = 1e-16
 
 
@@ -25,6 +36,8 @@ def tf_synthesis(n_sources, timefreqmat, swin, hop_length, n_fft):
     win_length = swin.size
     _, n_fft, numtime = timefreqmat.shape
 
+    # Map each synthesis-window sample onto its position in the inverse
+    # FFT output; necessary because the window may be longer than n_fft.
     ind = np.fmod(np.arange(win_length), n_fft)
     x = np.zeros((n_sources, (numtime - 1) * hop_length + win_length))
 
@@ -35,8 +48,12 @@ def tf_synthesis(n_sources, timefreqmat, swin, hop_length, n_fft):
     #     sind = i * hop_length
     #     for j in range(win_length):
     #         x[sind+j] = x[sind+j] + temp[ind[j]] * swin[j]
+    # np.fft.ifft normalises by 1/n_fft; undo that to match the textbook
+    # synthesis formula.
     temp = n_fft * np.fft.ifft(timefreqmat, axis=1).real
     for i in range(numtime):
+        # Each frame contributes win_length samples starting at i * hop;
+        # the two-hop slice matches the fixed 2:1 window/hop ratio here.
         x[:, i * hop_length : (i + 2) * hop_length] += temp[:, ind, i] * swin
 
     return x
@@ -51,6 +68,7 @@ def multichannel_tf_synthesis(n_sources, timefreqmat, swin, hop_length, n_fft):
     NUMFREQ is the # of frequency components per time point.\n
     X contains the reconstructed signal.\n
     """
+    # Same Fortran-order reshape as the single-channel path.
     swin = np.reshape(swin, -1, "F")
 
     win_length = swin.size
@@ -59,8 +77,10 @@ def multichannel_tf_synthesis(n_sources, timefreqmat, swin, hop_length, n_fft):
     ind = np.fmod(np.arange(win_length), n_fft)
     x = np.zeros((n_sources, (numtime - 1) * hop_length + win_length, chls))
 
+    # Undo numpy's 1/n_fft normalisation, as in tf_synthesis.
     temp = n_fft * np.fft.ifft(timefreqmat, axis=1).real
     for i in range(numtime):
+        # swin[..., None] broadcasts the one window across all channels.
         x[:, i * hop_length : (i + 2) * hop_length, :] += (
             temp[:, ind, i, :] * swin[..., None]
         )
@@ -79,6 +99,7 @@ def two_d_smooth(mat, ker):
     """
     from scipy.signal import convolve2d
 
+    # A scalar kernel means "average over a ker x ker square".
     try:
         len(ker)
         kmat = ker
@@ -87,6 +108,8 @@ def two_d_smooth(mat, ker):
         kmat = np.ones((ker, ker)) / ker**2
 
     kr, kc = kmat.shape
+    # "same" convolution is only centred for odd kernels; grow even
+    # dimensions by one so smoothing does not shift the histogram peaks.
     if kr % 2 == 0:
         kmat = convolve2d(kmat, np.ones((2, 1)), "symm", "same")
         kr += 1
@@ -95,6 +118,9 @@ def two_d_smooth(mat, ker):
         kmat = convolve2d(kmat, np.ones((1, 2)), "symm", "same")
         kc += 1
 
+    # convolve2d flips the kernel; rotate it so the operation behaves as
+    # a centred weighted average.  "symm" mirrors the borders, avoiding
+    # artificial dips where the histogram meets its edge.
     rota = np.rot90(kmat, 2)
     mat = convolve2d(mat, rota, "same", "symm")
     return mat
@@ -266,11 +292,13 @@ class Duet(object):
         """
         import scipy.signal as sp_signal
 
-        # Dividing by maximum to normalise
+        # Scale int16 PCM to [-1, 1] so both channels share one reference.
         self.x1 = self.x[mic_pair[0]] / np.iinfo(np.int16).max
         self.x2 = self.x[mic_pair[1]] / np.iinfo(np.int16).max
 
         # time-freq domain
+        # return_onesided=False keeps signed frequencies, which the delay
+        # estimator needs to distinguish positive from negative delays.
         _, _, tf1 = sp_signal.stft(
             self.x1,
             fs=self.fs,
@@ -287,6 +315,8 @@ class Duet(object):
         )
 
         # removing DC component
+        # The DC bin carries no phase information and would divide by zero
+        # in the delay estimate below.
         # Since the scipy stft will scale the return value, in order to match the
         # paper result, it should be rescaled back to the origin. Scipy stft pass
         # the scaling == 'spectrum' and mode == 'stft', the values will multiply
@@ -296,11 +326,15 @@ class Duet(object):
         tf1 = tf1[1:, :] * self._awin.sum()
         tf2 = tf2[1:, :] * self._awin.sum()
 
+        # Frequencies must follow scipy's full-FFT ordering: positive bins
+        # first, then negative bins (DC already dropped).
         # calculate pos/neg frequencies for later use in delay calc
         h1 = np.arange(1, (self._nfft / 2) + 1)
         h2 = np.arange(-(self._nfft / 2) + 1, 0)
         freq = np.concatenate((h1, h2)) * ((2 * np.pi) / self._nfft)
 
+        # Replicate the angular-frequency vector for every time frame so
+        # it broadcasts against tf1/tf2 (shape (t, f)).
         h = np.ones((tf1.shape[1], freq.shape[0]))
         for i in range(h.shape[0]):
             h[i] *= freq
@@ -333,9 +367,17 @@ class Duet(object):
             The relative delay.
             The ndarray must have the following format (t, f).
         """
+        # Ratio of the two channels at each time-frequency bin.  EPSILON
+        # keeps silent bins finite instead of producing inf/nan.
         R21 = (tf2 + EPSILON) / (tf1 + EPSILON)
+        # |R21| is the level ratio; alpha = a - 1/a is symmetric around
+        # zero for equal levels, so the histogram does not privilege a
+        # particular channel ordering.
         a = np.abs(R21)
         alpha = a - 1.0 / a
+        # The phase of the ratio is -omega * delta for a pure delay, so
+        # dividing by the angular frequency recovers delta in samples.
+        # DC was removed from fmat, so this division cannot hit zero.
         delta = -np.imag(np.log(R21)) / fmat
 
         return alpha, delta
@@ -365,6 +407,9 @@ class Duet(object):
         """
         import scipy.sparse as sp_sparse
 
+        # Weight each bin by the energy in both channels; p controls how
+        # strongly the quieter channel counts, while q emphasises higher
+        # frequencies, where a phase error means a smaller delay error.
         h1 = np.abs(self.tf1) * np.abs(self.tf2) ** self.p
         h2 = np.abs(self.fmat) ** self.q
         tf_weight = h1 * h2
@@ -378,6 +423,8 @@ class Duet(object):
         tf_weight = tf_weight[amask]
 
         # determine histogram indices
+        # Map alpha/delta from [-max, +max] onto a zero-based bin; rounding
+        # is required because sparse matrix indices must be integers.
         alphaind = np.around(
             (self.n_attenuation_bins - 1)
             * (alpha_vec + self.attenuation_max)
@@ -391,6 +438,8 @@ class Duet(object):
 
         # FULL-SPARSE TRICK TO CREATE 2D WEIGHTED HISTOGRAM
         # A(alphaind(k),deltaind(k)) = tf_weight(k), S is abins-by-dbins
+        # Duplicate coordinates are summed by the COO-to-CSR conversion,
+        # which yields the weighted histogram in a single pass.
         A = sp_sparse.csr_matrix(
             (tf_weight, (alphaind, deltaind)),
             shape=(self.n_attenuation_bins, self.n_delay_bins),
@@ -437,6 +486,8 @@ class Duet(object):
             An array contains the peaks of delay.
             The ndarray must have the following format (n_peaks, ).
         """
+        # Bin centres converted back to physical units.  Rows of the
+        # histogram follow attenuation and columns follow delay.
         x = np.linspace(-self.delay_max, self.delay_max, self.n_delay_bins)
         y = np.linspace(
             -self.attenuation_max, self.attenuation_max, self.n_attenuation_bins
@@ -447,7 +498,7 @@ class Duet(object):
 
         if prominence is None:
             logger.debug("using max-peak searching")
-            # Peaks: [a_idx, d_inx]
+            # Peaks: [a_idx, d_inx] in descending height.
             peaks = np.asarray(
                 find_peak_indices(
                     norm_atn_delay_hist,
@@ -462,6 +513,8 @@ class Duet(object):
                 std = np.sqrt((np.abs(cand_peaks - cand_peaks[0]) ** 2).mean())
                 cand_peaks = cand_peaks[np.abs(cand_peaks - cand_peaks[0]) < std]
 
+            # Fewer peaks than requested can come back once the
+            # neighbourhood zeroing has removed everything else.
             amax_idx = peaks[: cand_peaks.size, 0]
             dmax_idx = peaks[: cand_peaks.size, 1]
 
@@ -469,6 +522,8 @@ class Duet(object):
             # https://stackoverflow.com/questions/1713335/peak-finding-algorithm-for-python-scipy
             from scipy.signal import find_peaks
 
+            # Collapse the histogram onto the delay axis, keeping the
+            # strongest attenuation for each delay bin.
             delay_side = np.max(norm_atn_delay_hist, axis=0)
 
             dmax_idx, prop = find_peaks(
@@ -477,11 +532,16 @@ class Duet(object):
                 prominence=prominence,
             )
 
+            # Rank the 1-D peaks by prominence and keep the best n_peaks.
             prom_rank = np.argsort(prop["prominences"])[::-1][:n_peaks]
             dmax_idx = dmax_idx[prom_rank]
             self.prominences = prop["prominences"][prom_rank]
             if dmax_idx.size == 0:
+                # No column passed the prominence/width test: fall back to
+                # the global maximum so the caller still gets a direction.
                 dmax_idx = [np.argmax(delay_side)]
+            # For each selected delay column, take its strongest
+            # attenuation bin.
             amax_idx = np.argmax(norm_atn_delay_hist[:, dmax_idx], axis=0)
         atn_peak = y[amax_idx]
         delay_peak = x[dmax_idx]
@@ -510,11 +570,16 @@ class Duet(object):
             The ndarray must have the following format (n_peaks, t, f)
         """
         # convert the symmetric attenuation back to attenuation
+        # Positive root of a^2 - alpha * a - 1 = 0; a is a level ratio,
+        # so only this root is physical.
         peaka = (sym_atn_peak + np.sqrt(np.square(sym_atn_peak) + 4)) / 2
         bestsofar = float("inf") * np.ones(self.tf1.shape)
+        # 1-based labels leave zero free to mean "unassigned".
         bestind = np.zeros(self.tf1.shape)
 
         for i in range(sym_atn_peak.size):
+            # Score how well this prototype's predicted second-channel
+            # spectrum matches the observed one, normalised by its gain.
             score = (
                 np.abs(
                     peaka[i] * np.exp(-1j * self.fmat * self.delay_peak[i]) * self.tf1
@@ -580,6 +645,9 @@ class Duet(object):
         #     # as that eliminates most of the masking artifacts
         #     est[i] = esti[0:self.x1.shape[-1]]
         #     write(f"out{i}.wav", self.fs, est[i]+0.05*self.x1)
+        # Least-squares demixing estimate for each source:
+        #   (X1 + a * exp(j*omega*delta) * X2) / (1 + a^2),
+        # with a and delta taken from that source's histogram peak.
         h3 = (
             atn_peak[:, None, None]
             * np.exp(1j * self.fmat[None, ...] * self.delay_peak[:, None, None])
@@ -594,11 +662,15 @@ class Duet(object):
         for i in range(observed_src):
             mask[i, ...] = bestind == i + 1
 
+        # tf_synthesis expects the DC row that _construct_histogram
+        # removed, so prepend a zero row to each masked spectrogram.
         h1 = np.zeros((observed_src, 1, self.tf1.shape[-1]))
         h2 = h4 * mask
 
         h = np.concatenate((h1, h2), axis=1)
 
+        # Reuse the analysis window for synthesis, scaled for the 50 %
+        # overlap-add performed by tf_synthesis.
         est = tf_synthesis(
             observed_src,
             h,
@@ -638,7 +710,7 @@ class Duet(object):
 
         import scipy.signal as sp_signal
 
-        # Dividing by maximum to normalise
+        # Scale int16 PCM the same way as _construct_histogram.
         xs = self.x / np.iinfo(np.int16).max
 
         # time-freq domain
@@ -661,6 +733,8 @@ class Duet(object):
         for i in range(observed_src):
             mask[i, ...] = bestind == i + 1
 
+        # The same per-source mask applies to every channel; the trailing
+        # None broadcasts it across the channel axis.
         h1 = np.zeros((observed_src, 1, self.tf1.shape[-1], h3.shape[-1]))
         h2 = h3[None, ...] * mask[..., None]
 
@@ -677,6 +751,13 @@ class Duet(object):
         return est[:, 0 : self.x1.shape[-1], :]
 
     def plot_atn_delay_hist(self):
+        """Render the attenuation-delay histogram as a 3-D surface.
+
+        Requires :meth:`run` to have populated the histogram.  Side
+        effect: writes ``DUET.html`` in the current directory and opens it
+        in the default browser.
+        """
+
         import plotly.graph_objects as go
         from plotly.subplots import make_subplots
 
@@ -687,12 +768,16 @@ class Duet(object):
         y = np.linspace(
             -self.attenuation_max, self.attenuation_max, self.n_attenuation_bins
         )
+        # Default "xy" indexing puts attenuation on rows and delay on
+        # columns, matching norm_atn_delay_hist.
         x, y = np.meshgrid(x, y)
         z = self.norm_atn_delay_hist
 
         fig = make_subplots(specs=[[{"type": "scene"}]])
         fig.add_trace(go.Surface(x=x, y=y, z=z, colorscale="plasma", opacity=0.8))
 
+        # Draw the two 1-D marginals along the back edges: these are the
+        # projections used when finding peaks.
         fig.add_trace(
             go.Scatter3d(
                 x=x[0, :],

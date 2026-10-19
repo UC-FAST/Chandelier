@@ -1,4 +1,5 @@
 import os
+import time
 
 import cv2
 import numpy as np
@@ -51,6 +52,42 @@ def test_navigation_actions(tmp_path):
 
     end.left_press_action()
     assert library.current_position() == first
+
+
+def test_navigation_loads_an_image_that_was_not_prefetched(
+    tmp_path, monkeypatch
+):
+    from chandelier.media import library as library_module
+
+    _write_image(tmp_path, "a.png", 10)
+    _write_image(tmp_path, "b.png", 200)
+    monkeypatch.setattr(library_module, "_PREFETCH_MAX_BYTES", 0)
+
+    config = load_config()
+    library = MediaBrowser(
+        str(tmp_path), config.screen.width, config.screen.height
+    )
+    end = GalleryControlledEnd(library, config)
+    end._irq = lambda *args: None
+    end._msg_sender = lambda *args: None
+    end.on_enter("menu")
+
+    generator = end.main_loop()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        next(generator)
+        if library.is_current_frame_ready():
+            break
+    assert library.is_current_frame_ready()
+
+    end.right_press_action()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        frame = next(generator)
+        if library.is_current_frame_ready():
+            break
+    assert library.is_current_frame_ready()
+    assert frame.shape == (240, 320, 3)
 
 
 def test_circle_toggles_text_overlay(tmp_path):
@@ -164,7 +201,153 @@ def test_video_step_seek_and_loop(tmp_path):
     assert next(end.main_loop()).shape == (240, 320, 3)
     assert library.get_video_time()[0] >= position
 
-    end.shutter_press_action()
+    # Loop playback is configured from the menu now.
+    end._menu_tree = {
+        "player": {
+            "options": [{"id": "loop_playback", "value": True}]
+        }
+    }
+    end._read_player_settings()
     assert library.is_looping() is True
-    end.shutter_press_action()
+    end._menu_tree["player"]["options"][0]["value"] = False
+    end._read_player_settings()
     assert library.is_looping() is False
+
+    # Shutter toggles the thumbnail grid.
+    end.shutter_press_action()
+    assert end._grid_mode is True
+    assert next(end.main_loop()).shape == (240, 320, 3)
+    end.shutter_press_action()
+    assert end._grid_mode is False
+    assert next(end.main_loop()).shape == (240, 320, 3)
+
+
+def test_grid_view_navigation_and_open(tmp_path):
+    end, library, _, _ = _make_gallery(tmp_path)
+    end.on_enter("menu")
+    next(end.main_loop())
+
+    end.shutter_press_action()
+    assert end._grid_mode is True
+    first = next(end.main_loop())
+    assert first.shape == (240, 320, 3)
+
+    end.right_press_action()
+    assert end._grid_selection == 1
+    assert next(end.main_loop()).shape == (240, 320, 3)
+
+    end.center_press_action()
+    assert end._grid_mode is False
+    assert library.current_position() == 1
+    assert next(end.main_loop()).shape == (240, 320, 3)
+
+
+def test_grid_view_pages_with_rotary(tmp_path):
+    for index in range(12):
+        _write_image(tmp_path, f"{index:02d}.png", index * 10)
+    config = load_config()
+    library = MediaBrowser(
+        str(tmp_path), config.screen.width, config.screen.height
+    )
+    end = GalleryControlledEnd(library, config)
+    end._irq = lambda target: None
+    end._msg_sender = lambda *args: None
+    end.on_enter("menu")
+    next(end.main_loop())
+
+    end.shutter_press_action()
+    next(end.main_loop())
+    end.rotary_encoder_clockwise()
+    assert end._grid_selection == 9
+    assert next(end.main_loop()).shape == (240, 320, 3)
+    end.rotary_encoder_counter_clockwise()
+    assert end._grid_selection == 0
+
+
+def test_image_is_letterboxed_not_stretched(tmp_path):
+    image = np.full((30, 80, 3), 200, dtype=np.uint8)
+    cv2.imwrite(str(tmp_path / "wide.png"), image)
+    config = load_config()
+    library = MediaBrowser(
+        str(tmp_path), config.screen.width, config.screen.height
+    )
+    frame = library.get_current_frame()
+    assert frame.shape == (240, 320, 3)
+    # A 80x30 source scaled to 320 wide is only 120 high: black bars remain.
+    assert int(frame[0].max()) == 0
+    assert int(frame[-1].max()) == 0
+    assert int(frame[120].max()) > 0
+
+
+def test_info_line_includes_position_and_details(tmp_path):
+    end, _, _, _ = _make_gallery(tmp_path)
+    end.on_enter("menu")
+    text = next(iter(end._filename_page().values()))
+    assert "1/2" in text
+    assert ".png" in text
+    assert "80x60" in text
+
+
+def test_thumbnail_generation(tmp_path):
+    end, library, _, _ = _make_gallery(tmp_path)
+    end.on_enter("menu")
+    deadline = time.monotonic() + 10.0
+    thumbnail = library.get_thumbnail(0, 40, 30)
+    while thumbnail is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+        thumbnail = library.get_thumbnail(0, 40, 30)
+    assert thumbnail is not None
+    assert thumbnail.shape == (30, 40, 3)
+    details = library.get_media_details(0)
+    assert details["type"] == "image"
+    assert details["width"] == 80
+    assert details["height"] == 60
+    assert details["size"] > 0
+
+
+def test_rotary_select_toggles_the_grid(tmp_path):
+    end, library, _, _ = _make_gallery(tmp_path)
+    end.on_enter("menu")
+    next(end.main_loop())
+
+    end.rotary_encoder_select()
+    assert end._grid_mode is True
+    assert next(end.main_loop()).shape == (240, 320, 3)
+
+    first = library.current_position()
+    end.rotary_encoder_select()
+    assert end._grid_mode is False
+    assert library.current_position() == first
+    assert next(end.main_loop()).shape == (240, 320, 3)
+
+
+def test_loading_indicator_uses_red_square(tmp_path):
+    end, _, _, _ = _make_gallery(tmp_path)
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    end._draw_loading_indicator(frame)
+    assert tuple(int(v) for v in frame[9, 310]) == (0, 0, 255)
+
+
+def test_compose_shows_loading_indicator_until_ready(tmp_path, monkeypatch):
+    end, library, _, _ = _make_gallery(tmp_path)
+    end.on_enter("menu")
+
+    monkeypatch.setattr(library, "is_current_frame_ready", lambda: False)
+    frame = end._compose(np.zeros((240, 320, 3), dtype=np.uint8))
+    assert tuple(int(v) for v in frame[9, 310]) == (0, 0, 255)
+
+    monkeypatch.setattr(library, "is_current_frame_ready", lambda: True)
+    frame = end._compose(np.zeros((240, 320, 3), dtype=np.uint8))
+    assert tuple(int(v) for v in frame[9, 310]) == (0, 0, 0)
+
+
+def test_grid_shows_loading_indicator_while_pending(tmp_path, monkeypatch):
+    end, library, _, _ = _make_gallery(tmp_path)
+    end.on_enter("menu")
+    monkeypatch.setattr(
+        type(library),
+        "has_pending_thumbnails",
+        property(lambda self: True),
+    )
+    frame = end._render_grid()
+    assert tuple(int(v) for v in frame[9, 310]) == (0, 0, 255)

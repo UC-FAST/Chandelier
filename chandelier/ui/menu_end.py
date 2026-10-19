@@ -1,8 +1,32 @@
+"""Config-driven menu screen with paginated lists and value editors.
+
+The menu is a set of pages navigated as a stack and loaded from the menu
+JSON file.  Each page is stored under an id within its section ("0" is the
+root) with a ``title`` and an ``options`` list.  Options carry a ``type``
+(bool, menu, irq, msg, option or numeral),
+a translatable ``content`` label and type-specific fields such as
+``value``, ``receiver``, or ``min``/``max``/``step``.
+
+Navigation tracks ``_current_page``/``_current_index`` over a windowed
+view of the flat option list and pushes ``(page id, row)`` pairs onto
+``_route_list`` so Back can restore the previous page.  Editors keep the
+in-progress value in ``_value_temp`` until the user confirms or cancels.
+
+Rendering supports the classic layout plus modern and retro skins.
+Cursor movement, option scrolling and numeric edits ease toward their
+target over a few frames; otherwise each input action queues a single
+composed frame for :meth:`MenuControlledEnd.main_loop`.  Menu state is
+persisted with :func:`chandelier.config.save_menu_config`, and defaults
+missing from older config files are migrated at construction time.
+"""
+
 from __future__ import annotations
 
+import copy
 import math
 import queue
 import time
+from decimal import Decimal
 from pathlib import Path
 
 import cv2
@@ -138,6 +162,9 @@ class MenuControlledEnd(ControlledEnd):
         self._width, self._height, self._row_count = width, height, row_count
         self._logger = get_logger(__name__)
         self._menu_options = load_menu_config(self._path)
+        # Older configs may predate newer sections or options.  Add the
+        # missing defaults and write the migrated file back; a read-only
+        # filesystem must not stop the menu from starting.
         if ensure_menu_defaults(self._menu_options):
             try:
                 save_menu_config(self._menu_options, self._path)
@@ -168,6 +195,8 @@ class MenuControlledEnd(ControlledEnd):
         self._theme_preview_original: str | None = None
         self._padding = padding
         self._show_index, self._show_preview, self._thickness = show_index, show_preview, thickness
+        # Reserve the fixed chrome (header, footer, preview strip) first;
+        # the remaining height is shared out evenly between the list rows.
         self._header_height = max(20, self._font_height + 6)
         self._footer_height = max(16, self._font_height)
         self._preview_height = 36 if self._show_preview else 0
@@ -175,6 +204,8 @@ class MenuControlledEnd(ControlledEnd):
         self._content_bottom = (
             self._height - self._footer_height - self._preview_height - 2
         )
+        # Never squeeze rows below the font height, even on a tiny panel;
+        # the max() keeps the row height positive and readable.
         available = max(
             self._row_count * (self._font_height + 2),
             self._content_bottom - self._content_top,
@@ -195,6 +226,23 @@ class MenuControlledEnd(ControlledEnd):
         self._value_temp = None
         self._route_list: list[tuple] = []
         self._frame_list: queue.SimpleQueue | None = None
+        # Each animation stores its start timestamp and the endpoints to
+        # interpolate between.  The cursor is deliberately quicker than
+        # list/value edits so key repeat still feels responsive.
+        self._cursor_anim_start: float | None = None
+        self._cursor_anim_from = 0.0
+        self._cursor_anim_to = 0.0
+        self._cursor_anim_duration = 0.12
+        self._option_anim_start: float | None = None
+        self._option_anim_from = 0.0
+        self._option_anim_to = 0.0
+        self._option_anim_duration = 0.16
+        self._value_anim_start: float | None = None
+        self._value_anim_from = 0.0
+        self._value_anim_to = 0.0
+        self._value_anim_duration = 0.16
+        # main_loop sleeps to this cadence while an animation is running.
+        self._anim_interval = 1 / 60
         self._logger.info(
             "MenuControlledEnd initialised path=%s resolution=%sx%s theme=%s",
             self._path,
@@ -207,6 +255,9 @@ class MenuControlledEnd(ControlledEnd):
         return theme_id_from_options(self._menu_options)
 
     def _apply_theme(self, theme_id: str) -> None:
+        """Switch themes for this end and publish the global active theme."""
+        # Theme previews must not interrupt an in-flight list animation;
+        # otherwise moving through the Theme list would snap on every item.
         self._menu_theme = get_theme(theme_id)
         set_active_theme(self._menu_theme.id)
         # Kept for older drawing helpers that still index a dict.
@@ -227,6 +278,7 @@ class MenuControlledEnd(ControlledEnd):
             self._apply_theme(str(value))
 
     def _cancel_theme_preview(self) -> None:
+        """Restore the theme that was active before the preview started."""
         if (
             self._theme_preview_active
             and self._theme_preview_original is not None
@@ -236,6 +288,7 @@ class MenuControlledEnd(ControlledEnd):
         self._theme_preview_original = None
 
     def _finish_theme_preview(self) -> None:
+        """Stop tracking the preview and keep the committed theme."""
         self._theme_preview_active = False
         self._theme_preview_original = None
 
@@ -249,6 +302,8 @@ class MenuControlledEnd(ControlledEnd):
             self._page_count (int): The calculated number of pages.
         """
 
+        # Size pages by the last enabled row so trailing disabled entries
+        # cannot produce blank pages at the end of the list.
         enable_option_range = 0
         for index, option in enumerate(self._options, start=1):
             enable = option.get('enable', True)
@@ -282,12 +337,16 @@ class MenuControlledEnd(ControlledEnd):
         """
 
         self._option_list = self._menu_options[key]
+        # Every section starts at its root page "0"; the route stack only
+        # needs to record parents for Back navigation.
         self._current_menu_id = "0"
         self._route_list = list()
         self._title = self._title = self._option_list[self._current_menu_id].get(
             'title', None)
         self._options = self._option_list[self._current_menu_id]['options']
-        self._apply_enable_conditions()
+        # A saved tree may be internally inconsistent, so re-apply the
+        # cross-option rules after switching pages.
+        self._enforce_camera_rules(None)
         self._page_count_calc()
         self._space_calc()
         self._select_index = None
@@ -308,7 +367,9 @@ class MenuControlledEnd(ControlledEnd):
         save_menu_config(self._menu_options, self._path)
 
     def _space_calc(self):
+        """Derive the inter-row gap from the leftover panel height."""
         line_count = self._row_count
+        # The preview strip and title each occupy one extra text line.
         if self._show_preview:
             line_count += 1
         if self._title is not None:
@@ -343,8 +404,11 @@ class MenuControlledEnd(ControlledEnd):
             - self._page_count (int): Total number of pages.
             - self._theme (dict): Color theme for drawing.
         """
+        # Scale the rail with the smaller dimension so the indicator keeps
+        # its proportions on any display size.
         ref_length = min(self._width, self._height)
 
+        # A solid arrow means more pages exist in that direction.
         top_solid, bottom_solid = True, True
         if self._current_page == self._page_count - 1:
             bottom_solid = False
@@ -435,6 +499,8 @@ class MenuControlledEnd(ControlledEnd):
         if not item_count:
             item_count = self._row_count
         if self._title is not None and not ignore_title:
+            # Leave room for the title line plus half a row gap before the
+            # first item.
             first_start_coordinate = (
                 self._padding[0],
                 self._padding[1] +
@@ -453,6 +519,7 @@ class MenuControlledEnd(ControlledEnd):
             temp[1] += self._font_height + self._space_height
 
     def _jump_to_previous(self):
+        """Pop the route stack and restore its page and row."""
         last = self._route_list.pop()
         self._jump_by_id(last[0], record=False)
         self._current_index = last[1]
@@ -462,16 +529,24 @@ class MenuControlledEnd(ControlledEnd):
 
         if not self._options:
             return
+        # Conditions may refer to an option in another section (for example
+        # EV Compensation depends on Auto Exposure), so collect values from
+        # every section in this end and update every section.
         values = {}
-        for option in self._options:
-            if not isinstance(option, dict):
+        all_options = []
+        for section in self._option_list.values():
+            if not isinstance(section, dict):
                 continue
-            value = option.get("value")
-            if isinstance(value, dict):
-                value = value.get("value")
-            values[option.get("id")] = value
+            for option in section.get("options", []):
+                if not isinstance(option, dict):
+                    continue
+                all_options.append(option)
+                value = option.get("value")
+                if isinstance(value, dict):
+                    value = value.get("value")
+                values[option.get("id")] = value
 
-        for option in self._options:
+        for option in all_options:
             condition = option.get("enable_if")
             if not isinstance(condition, dict):
                 continue
@@ -501,7 +576,17 @@ class MenuControlledEnd(ControlledEnd):
             return
         ready_to_enable, ready_to_disable = [], []
 
-        for i in self._options:
+        # Dependencies may span sections (Auto Exposure controls options in
+        # both Exposure and Manual), so search the whole end.
+        all_options = []
+        for section in self._option_list.values():
+            if not isinstance(section, dict):
+                continue
+            for candidate in section.get("options", []):
+                if isinstance(candidate, dict):
+                    all_options.append(candidate)
+
+        for i in all_options:
             if i['id'] in set_disable:
                 if option['value']:
                     ready_to_disable.append(i)
@@ -514,13 +599,13 @@ class MenuControlledEnd(ControlledEnd):
                     ready_to_disable.append(i)
 
         if option.get('enable', True):
-            for i in self._options:
+            for i in all_options:
                 if i['id'] in enable_with:
                     if i in ready_to_disable:
                         continue
                     ready_to_enable.append(i)
         else:
-            for i in self._options:
+            for i in all_options:
                 if i['id'] in enable_with:
                     if i in ready_to_enable:
                         ready_to_enable.remove(i)
@@ -531,14 +616,95 @@ class MenuControlledEnd(ControlledEnd):
         for j in ready_to_disable:
             j['enable'] = False
 
+    def _camera_options_by_id(self) -> dict:
+        """Index every option in this menu end by its id."""
+        options = {}
+        for section in self._option_list.values():
+            if not isinstance(section, dict):
+                continue
+            for option in section.get("options", []):
+                if (
+                    isinstance(option, dict)
+                    and isinstance(option.get("id"), str)
+                ):
+                    options[option["id"]] = option
+        return options
+
+    @staticmethod
+    def _option_off(option: dict) -> bool:
+        """Set an option to its zero/first choice; return True if changed."""
+
+        choices = option.get("options")
+        if not isinstance(choices, list):
+            return False
+        off = next(
+            (
+                choice
+                for choice in choices
+                if isinstance(choice, dict) and choice.get("value") == 0
+            ),
+            None,
+        )
+        if off is None:
+            return False
+        if option.get("value") == off:
+            return False
+        option["value"] = copy.deepcopy(off)
+        return True
+
+    def _enforce_camera_rules(self, changed_id: str | None = None) -> None:
+        """Enforce HDR/Auto-Exposure compatibility.
+
+        HDR needs Auto Exposure.  Selecting HDR turns Auto Exposure on and
+        releases AE Lock; turning Auto Exposure off disables HDR.  On a tree
+        load the manual-exposure choice wins, so HDR is cleared when Auto
+        Exposure is already off.
+        """
+
+        options = self._camera_options_by_id()
+        hdr = options.get("hdr")
+        auto = options.get("auto_expose")
+        if not isinstance(hdr, dict) or not isinstance(auto, dict):
+            self._apply_enable_conditions()
+            return
+
+        hdr_value = hdr.get("value")
+        if isinstance(hdr_value, dict):
+            hdr_value = hdr_value.get("value")
+        hdr_active = bool(hdr_value)
+        auto_active = bool(auto.get("value"))
+
+        if hdr_active and not auto_active:
+            if changed_id == "hdr":
+                auto["value"] = True
+                self._set_enable_state(auto)
+            else:
+                self._option_off(hdr)
+                hdr_active = False
+
+        if hdr_active:
+            ae_lock = options.get("ae_lock")
+            if isinstance(ae_lock, dict) and ae_lock.get("value"):
+                ae_lock["value"] = False
+
+        self._apply_enable_conditions()
+
     def select(self):
+        """Activate the highlighted item or enter its value editor."""
+        self._cancel_cursor_animation()
+        self._cancel_option_animation()
+        self._cancel_value_animation()
         t = self._current_options[self._current_index]['type'].lower()
         if t == MenuItemType.BOOL:
+            # Booleans commit immediately: flip the value, update dependent
+            # options, and notify the owner/receiver before saving.
             self._current_options[self._current_index]['value'] = not self._current_options[self._current_index][
                 'value']
             self._set_enable_state(
                 self._current_options[self._current_index])
-            self._apply_enable_conditions()
+            self._enforce_camera_rules(
+                self._current_options[self._current_index].get("id")
+            )
             self._msg_sender(
                 self._id,
                 self._from,
@@ -558,15 +724,20 @@ class MenuControlledEnd(ControlledEnd):
                 )
             self.dump_config()
         elif t == MenuItemType.MENU:
+            # Push the current location and open the child page.
             self._jump_by_index(self._current_index)
             self.decorate()
             return
         elif t == MenuItemType.IRQ:
+            # IRQ items hand control to another end; nothing is persisted.
             self._irq(self._current_options[self._current_index]['value'])
             return
         elif t == MenuItemType.MSG:
             option = self._current_options[self._current_index]
-            if option.get("id") == "reboot" and not self._confirm_power:
+            if (
+                option.get("id") in {"reboot", "restart_service"}
+                and not self._confirm_power
+            ):
                 # Destructive action: require a second confirmation press.
                 self._confirm_power = True
                 self._confirm_option = option
@@ -575,6 +746,8 @@ class MenuControlledEnd(ControlledEnd):
             self._confirm_option = None
             self._send_current_message()
         elif t == MenuItemType.OPTION or t == MenuItemType.NUMERAL:
+            # Enter edit mode.  The original value stays untouched in the
+            # option until unselect() commits _value_temp, so Cancel is free.
             option = self._current_options[self._current_index]
             if option.get("id") == "theme":
                 self._theme_preview_active = True
@@ -585,7 +758,10 @@ class MenuControlledEnd(ControlledEnd):
             raise RuntimeError()
 
     def _send_current_message(self, option: dict | None = None) -> None:
+        """Send an MSG item's payload and return control to its owner."""
         option = option or self._current_options[self._current_index]
+        # The whole menu section travels with the value so the receiver can
+        # render or restore the surrounding state.
         self._msg_sender(
             self._id,
             option["receiver"],
@@ -594,6 +770,9 @@ class MenuControlledEnd(ControlledEnd):
         self._irq(self._from)
 
     def _send_power_action(self, option: dict) -> None:
+        """Forward a confirmed power/service action to the controller."""
+        # The controller owns the actual subprocess call; the menu only
+        # routes the option after the user has confirmed it.
         self._msg_sender(
             None,
             option.get("receiver", EndId.CONTROLLER.value),
@@ -613,9 +792,15 @@ class MenuControlledEnd(ControlledEnd):
         - Resets the selection index.
         - Dumps (saves) the current configuration.
         """
+        self._cancel_cursor_animation()
+        self._cancel_option_animation()
+        self._cancel_value_animation()
+        # Commit the edit, then re-run dependency and compatibility rules
+        # before announcing the new state.
         self._current_options[self._select_index]['value'] = self._value_temp
         self._value_temp = None
-        self._apply_enable_conditions()
+        edited = self._current_options[self._select_index]
+        self._enforce_camera_rules(edited.get("id"))
         self._page_count_calc()
         self._msg_sender(
             self._id,
@@ -625,7 +810,6 @@ class MenuControlledEnd(ControlledEnd):
                 self._menu_options[self._from]
             )
         )
-        edited = self._current_options[self._select_index]
         receiver = edited.get("receiver")
 
         if edited.get("id") == "power":
@@ -638,6 +822,8 @@ class MenuControlledEnd(ControlledEnd):
 
         self._select_index = None
         self.dump_config()
+        # Theme and language changes are process-wide, so apply them (and
+        # retire any live theme preview) once the edit is committed.
         if edited.get("id") == "theme":
             self._apply_theme(self._read_theme_id())
             self._finish_theme_preview()
@@ -648,6 +834,10 @@ class MenuControlledEnd(ControlledEnd):
             translator.set_language(value)
 
     def up_action(self):
+        """Move the cursor up past any disabled rows."""
+        # Count the contiguous disabled run immediately above the cursor,
+        # then repeat the single-step move that many times.  The else clause
+        # means the run reached the top of the list: stay put.
         times = 1
         for i in self._options[self._current_page * self._row_count + self._current_index - 1::-1]:
             enable = i.get('enable', True)
@@ -662,14 +852,20 @@ class MenuControlledEnd(ControlledEnd):
             self.up_one_step()
 
     def up_one_step(self):
+        """Move up one row, wrapping to the previous page at the top row."""
         if self._current_page == 0 and self._current_index == 0:
             return
         elif self._current_page != 0 and self._current_index == 0:
             self._page_up()
             return
+        start = self._cursor_position()
         self._current_index -= 1
+        self._start_cursor_animation(start, self._current_index)
 
     def _page_up(self):
+        """Show the previous page with the cursor on its last row."""
+        # The cursor jumps with the page, so drop any in-flight glide.
+        self._cancel_cursor_animation()
         if self._current_page == 0:
             return
         self._current_page -= 1
@@ -679,6 +875,9 @@ class MenuControlledEnd(ControlledEnd):
         ]
 
     def down_action(self):
+        """Move the cursor down past any disabled rows."""
+        # Same disabled-run counting as up_action(), but scanning forward;
+        # reaching the end of the list leaves the cursor where it was.
         times = 1
         for i in self._options[self._current_page * self._row_count + self._current_index + 1:]:
             enable = i.get('enable', True)
@@ -693,14 +892,19 @@ class MenuControlledEnd(ControlledEnd):
             self.down_one_step()
 
     def down_one_step(self):
+        """Move down one row, wrapping to the next page at the bottom row."""
         if self._current_page * self._row_count + self._current_index + 1 == len(self._options):
             return
         elif self._current_index == self._row_count - 1:
             self._page_down()
             return
+        start = self._cursor_position()
         self._current_index += 1
+        self._start_cursor_animation(start, self._current_index)
 
     def _page_down(self):
+        """Show the next page with the cursor on its first row."""
+        self._cancel_cursor_animation()
         if self._current_page >= self._page_count - 1:
             return
         self._current_page += 1
@@ -709,11 +913,141 @@ class MenuControlledEnd(ControlledEnd):
             self._current_page * self._row_count:(self._current_page + 1) * self._row_count
         ]
 
+    # ------------------------------------------------------------------
+    # Cursor animation
+    # ------------------------------------------------------------------
+    def _cursor_position(self) -> float:
+        """Row position of the cursor, interpolated while animating."""
+
+        if self._cursor_anim_start is None:
+            return float(self._current_index)
+        elapsed = time.monotonic() - self._cursor_anim_start
+        progress = min(
+            1.0, max(0.0, elapsed / self._cursor_anim_duration)
+        )
+        return self._cursor_anim_from + (
+            self._cursor_anim_to - self._cursor_anim_from
+        ) * progress
+
+    def _start_cursor_animation(self, start: float, target: int) -> None:
+        """Start an eased row transition when the theme supports motion."""
+        theme = self._menu_theme
+        # Outline cursors are redrawn in place, and classic/retro skins do
+        # their own rendering, so only modern fill/bar cursors animate.
+        if (
+            abs(start - target) < 1e-3
+            or theme.render_style != "modern"
+            or theme.cursor_style == "outline"
+        ):
+            self._cursor_anim_start = None
+            return
+        self._cursor_anim_from = float(start)
+        self._cursor_anim_to = float(target)
+        self._cursor_anim_start = time.monotonic()
+
+    def _cancel_cursor_animation(self) -> None:
+        self._cursor_anim_start = None
+
+    def _drain_frames(self) -> None:
+        """Drop queued frames before composing an animation frame."""
+
+        while True:
+            try:
+                self._frame_list.get_nowait()
+            except queue.Empty:
+                return
+
+    @staticmethod
+    def _ease(progress: float) -> float:
+        """Smoothstep easing: zero velocity at both ends of the move."""
+        progress = min(1.0, max(0.0, progress))
+        return progress * progress * (3.0 - 2.0 * progress)
+
+    def _option_position(self, selected: int) -> float:
+        """Option-row position in list units, eased while scrolling."""
+        if self._option_anim_start is None:
+            return float(selected)
+        elapsed = time.monotonic() - self._option_anim_start
+        progress = self._ease(elapsed / self._option_anim_duration)
+        return self._option_anim_from + (
+            self._option_anim_to - self._option_anim_from
+        ) * progress
+
+    def _start_option_animation(self, start: int, target: int) -> None:
+        """Glide the option highlight between two list indexes."""
+        if start == target:
+            self._option_anim_start = None
+            return
+        self._option_anim_from = float(start)
+        self._option_anim_to = float(target)
+        self._option_anim_start = time.monotonic()
+
+    def _cancel_option_animation(self) -> None:
+        self._option_anim_start = None
+
+    def _numeric_position(self, value: float) -> float:
+        """Numeric value to display while its edit animation runs."""
+        if self._value_anim_start is None:
+            return value
+        elapsed = time.monotonic() - self._value_anim_start
+        progress = self._ease(elapsed / self._value_anim_duration)
+        return self._value_anim_from + (
+            self._value_anim_to - self._value_anim_from
+        ) * progress
+
+    def _start_value_animation(self, start: float, target: float) -> None:
+        """Animate a numeric edit from the old to the new value."""
+        if abs(start - target) < 1e-9:
+            self._value_anim_start = None
+            return
+        self._value_anim_from = float(start)
+        self._value_anim_to = float(target)
+        self._value_anim_start = time.monotonic()
+
+    def _cancel_value_animation(self) -> None:
+        self._value_anim_start = None
+
+    def _animation_active(self) -> bool:
+        """True while main_loop must keep composing frames."""
+        return (
+            self._cursor_anim_start is not None
+            or self._option_anim_start is not None
+            or self._value_anim_start is not None
+        )
+
+    def _expire_animations(self, now: float) -> None:
+        """Clear animations whose duration has elapsed."""
+        if (
+            self._cursor_anim_start is not None
+            and now - self._cursor_anim_start
+            >= self._cursor_anim_duration
+        ):
+            self._cursor_anim_start = None
+        if (
+            self._option_anim_start is not None
+            and now - self._option_anim_start
+            >= self._option_anim_duration
+        ):
+            self._option_anim_start = None
+        if (
+            self._value_anim_start is not None
+            and now - self._value_anim_start
+            >= self._value_anim_duration
+        ):
+            self._value_anim_start = None
+
     def _jump_by_index(self, index):
+        """Open the submenu referenced by the option at ``index``."""
         self._jump_by_id(self._current_options[index]['value'])
 
     def _jump_by_id(self, target, record=True):
+        """Switch to page ``target``, optionally recording the return path."""
+        self._cancel_cursor_animation()
+        self._cancel_option_animation()
+        self._cancel_value_animation()
         if record:
+            # Back restores both the parent page and the row it was left on.
+            # Replays from _jump_to_previous() pass record=False.
             self._route_list.append(
                 (self._current_menu_id, self._current_index))
         self._current_menu_id = target
@@ -728,6 +1062,100 @@ class MenuControlledEnd(ControlledEnd):
         self._current_page = 0
         self._current_index = 0
         self._current_options = self._options[0:self._row_count]
+
+    # ------------------------------------------------------------------
+    # Touch input
+    # ------------------------------------------------------------------
+    def handle_touch(self, x: float, y: float) -> bool:
+        """Handle a normalized tap on the menu or its option list."""
+
+        # A pending power confirmation is modal and button-only; taps also
+        # do nothing before on_enter() has created the frame queue.
+        if self._confirm_power or self._frame_list is None:
+            return False
+        # Touch arrives normalized (0..1) so the same hit boxes work at any
+        # display resolution.
+        if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+            return False
+        px = x * self._width
+        py = y * self._height
+        if self._select_index is None:
+            return self._touch_list(px, py)
+        # While editing, only OPTION lists are tappable; numeric editors
+        # stay on the buttons/encoder.
+        option = self._current_options[self._select_index]
+        if option.get("type", "").lower() == MenuItemType.OPTION:
+            return self._touch_option(px, py)
+        return False
+
+    def _touch_list(self, px: float, py: float) -> bool:
+        """Hit-test the visible rows; tap selects or moves the cursor."""
+        x1 = self._padding[0]
+        x2 = self._width - self._padding[2]
+        if not (x1 <= px <= x2):
+            return False
+        # Rows have a uniform height starting at _content_top, so the row
+        # index is a plain division.  Header/footer taps fall outside.
+        row = int((py - self._content_top) // self._row_height)
+        if row < 0 or row >= len(self._current_options):
+            return False
+        option = self._current_options[row]
+        if not option.get("enable", True):
+            return False
+        if row == self._current_index:
+            # Tapping the already highlighted row activates it, mirroring
+            # the OK button.
+            self.select()
+        else:
+            # Tapping another row only moves the cursor first.
+            start = self._cursor_position()
+            self._current_index = row
+            self._start_cursor_animation(start, row)
+        self.decorate()
+        return True
+
+    def _touch_option(self, px: float, py: float) -> bool:
+        """Hit-test the scrolling option window; tap selects or confirms."""
+        option = self._current_options[self._select_index]
+        choices = option.get("options", [])
+        if not choices:
+            return False
+        value = (
+            self._value_temp
+            if self._value_temp is not None
+            else option.get("value")
+        )
+        try:
+            selected = choices.index(value)
+        except ValueError:
+            # A stale or hand-edited config may not contain the stored
+            # value; fall back to the first choice for geometry purposes.
+            selected = 0
+        # Reuse the exact window/geometry used for drawing, otherwise touch
+        # targets would drift as the list scrolls.
+        start, visible, row_height, block_top = (
+            self._option_list_geometry(selected, len(choices))
+        )
+        x1 = self._padding[0]
+        x2 = self._width - self._padding[2]
+        if not (x1 <= px <= x2):
+            return False
+        row = int((py - block_top) // row_height)
+        if row < 0 or row >= visible:
+            return False
+        index = start + row
+        if index >= len(choices):
+            return False
+        if index == selected:
+            # Tapping the current choice is the OK action.  Any other row
+            # only moves the edit cursor, so a second tap commits it.
+            self.unselect()
+        else:
+            self._value_temp = choices[index]
+            self._start_option_animation(selected, index)
+            self._preview_theme()
+        self.decorate()
+        return True
 
     def _draw_content(self, frame):
         """
@@ -1237,8 +1665,11 @@ class MenuControlledEnd(ControlledEnd):
         radius: int,
         thickness: int = -1,
     ) -> None:
+        """Draw a filled or outlined rectangle with rounded corners."""
         x1, y1 = int(x1), int(y1)
         x2, y2 = int(x2), int(y2)
+        # Clamp the radius to half the shorter side so corners cannot
+        # overlap or invert on small badges.
         radius = max(0, min(radius, (x2 - x1) // 2, (y2 - y1) // 2))
         if radius == 0:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
@@ -1282,6 +1713,7 @@ class MenuControlledEnd(ControlledEnd):
             )
 
     def _pixel_height(self, font_scale) -> int:
+        """Map one of the scale constants back to its pixel height."""
         if font_scale == self._big_font_scale:
             return self._font_height + 10
         if font_scale == self._small_font_scale:
@@ -1315,6 +1747,7 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def _measure(self, text, font_face=None, font_scale=None, thickness=1):
+        """Return ((width, height), height) for translated text."""
         text = tr(text)
         if not text:
             return (0, 0), 0
@@ -1324,6 +1757,7 @@ class MenuControlledEnd(ControlledEnd):
         return (width, height), height
 
     def _flush_text(self, frame) -> None:
+        """Draw queued text last so glyphs stay above the shapes."""
         queued = self._text_queue
         self._text_queue = []
         for text, org, height, color, thickness in queued:
@@ -1334,6 +1768,7 @@ class MenuControlledEnd(ControlledEnd):
     def _fit_text(
         self, text: str, max_width: int, scale: float | None = None
     ) -> str:
+        """Trim text with a ``..`` suffix until it fits ``max_width``."""
         text = tr(text)
         if max_width <= 0 or not text:
             return ""
@@ -1348,12 +1783,15 @@ class MenuControlledEnd(ControlledEnd):
         return (text + ellipsis) if text else ""
 
     def _format_value(self, option: dict, value) -> str:
+        """Format a stored numeric value for its configured display unit."""
         fmt = option.get("format")
         if fmt == "shutter":
             try:
                 micros = float(value)
             except (TypeError, ValueError):
                 return str(value)
+            # Shutter times are stored in microseconds; show long exposures
+            # in seconds and the usual sub-second range as 1/N.
             if micros >= 1_000_000:
                 return f"{micros / 1_000_000:.1f}s"
             if micros >= 1000:
@@ -1393,9 +1831,11 @@ class MenuControlledEnd(ControlledEnd):
                 distance = float(value)
             except (TypeError, ValueError):
                 return str(value)
+            # Non-positive focus distance is the camera's "auto" sentinel.
             return "auto" if distance <= 0.0 else f"{distance:g}cm"
         if fmt == "lens":
             try:
+                # Diopters are stored in hundredths.
                 return f"{float(value) / 100.0:.2f} dpt"
             except (TypeError, ValueError):
                 return str(value)
@@ -1404,6 +1844,7 @@ class MenuControlledEnd(ControlledEnd):
         return str(value)
 
     def _display_value(self, option: dict) -> str:
+        """Return the short badge text shown at the right of an item."""
         item_type = option["type"].lower()
         value = option.get("value")
         if item_type == MenuItemType.BOOL:
@@ -1421,6 +1862,7 @@ class MenuControlledEnd(ControlledEnd):
         return str(value)
 
     def _icon_name(self, option: dict) -> str:
+        """Prefer an explicit icon, else pick one by item type."""
         if option.get("icon"):
             return option["icon"]
         return {
@@ -1433,10 +1875,12 @@ class MenuControlledEnd(ControlledEnd):
         }.get(option["type"].lower(), "sliders")
 
     def _row_geometry(self, index: int) -> tuple[int, int]:
+        """Return the top and bottom y coordinates of a list row."""
         y1 = self._content_top + index * self._row_height
         return y1, y1 + self._row_height
 
     def _draw_header(self, frame) -> None:
+        """Draw the modern title bar and its page-number pill."""
         theme = self._menu_theme
         cv2.rectangle(
             frame, (0, 0), (self._width, self._header_height), theme.header_bg, -1
@@ -1475,6 +1919,7 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def _draw_footer(self, frame) -> None:
+        """Draw the footer with context-sensitive button hints."""
         theme = self._menu_theme
         y0 = self._height - self._footer_height
         if self._retro_style == "aero":
@@ -1500,6 +1945,8 @@ class MenuControlledEnd(ControlledEnd):
                 theme.footer_bg,
                 -1,
             )
+        # Hints mirror the controller's mapping for the current mode: an
+        # open editor saves/cancels, a list opens/toggles/sends.
         if self._select_index is not None:
             hints = "OK SAVE   < > VALUE   X CANCEL"
         elif self._current_options:
@@ -1529,9 +1976,11 @@ class MenuControlledEnd(ControlledEnd):
     def _draw_value_badge(
         self, frame, option: dict, x1: int, y1: int, x2: int, y2: int, enabled: bool
     ) -> None:
+        """Draw the rounded value badge at the right edge of a row."""
         theme = self._menu_theme
         item_type = option["type"].lower()
         if item_type == MenuItemType.MENU:
+            # Submenus show a chevron instead of a value badge.
             cx = x2 - 5
             cy = (y1 + y2) // 2
             color = theme.accent if enabled else theme.text_dim
@@ -1541,6 +1990,7 @@ class MenuControlledEnd(ControlledEnd):
 
         text = self._display_value(option)
         if item_type == MenuItemType.BOOL:
+            # Colour makes the boolean state readable at a glance.
             background = theme.success if option.get("value") else theme.danger
             foreground = theme.accent_text
         else:
@@ -1585,14 +2035,64 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def _draw_row(self, frame, index: int, option: dict) -> None:
+        """Draw one modern list row: background, cursor, icon and text."""
         theme = self._menu_theme
         y1, y2 = self._row_geometry(index)
         x1 = self._padding[0]
         x2 = self._width - self._padding[2]
-        selected = index == self._current_index and self._select_index is None
+        editing = self._select_index is not None
+        cursor_pos = self._cursor_position() if not editing else None
+        animating = (
+            not editing
+            and self._cursor_anim_start is not None
+            and theme.cursor_style != "outline"
+        )
+        nearest = (
+            int(cursor_pos + 0.5)
+            if cursor_pos is not None
+            else self._current_index
+        )
+        selected = not editing and index == nearest
         enabled = bool(option.get("enable", True))
 
-        if selected:
+        # Alternate shading makes long lists easier to scan.
+        if index % 2 == 0:
+            cv2.rectangle(
+                frame, (x1, y1), (x2, y2 - 1), theme.surface, -1
+            )
+
+        if animating:
+            # The cursor is a floating strip between rows mid-animation.
+            # Clip it to this row so each row paints only its own slice.
+            top = self._content_top + cursor_pos * self._row_height + 1
+            bottom = top + self._row_height - 3
+            seg_top = max(top, y1)
+            seg_bottom = min(bottom, y2 - 2)
+            if seg_bottom > seg_top:
+                fill = (
+                    theme.surface
+                    if theme.cursor_style == "bar"
+                    else theme.surface_alt
+                )
+                cv2.rectangle(
+                    frame,
+                    (x1, int(seg_top + 0.5)),
+                    (x2, int(seg_bottom + 0.5)),
+                    fill,
+                    -1,
+                )
+                if enabled:
+                    bar_top = max(top + 4, y1 + 4)
+                    bar_bottom = min(bottom - 4, y2 - 5)
+                    if bar_bottom > bar_top:
+                        cv2.rectangle(
+                            frame,
+                            (x1 + 1, int(bar_top + 0.5)),
+                            (x1 + 4, int(bar_bottom + 0.5)),
+                            theme.accent,
+                            -1,
+                        )
+        elif selected:
             if theme.cursor_style == "fill":
                 self._rounded_rect(
                     frame, x1, y1 + 1, x2, y2 - 2, theme.surface_alt, 5
@@ -1613,10 +2113,6 @@ class MenuControlledEnd(ControlledEnd):
                     theme.accent,
                     -1,
                 )
-        elif index % 2 == 0:
-            cv2.rectangle(
-                frame, (x1, y1), (x2, y2 - 1), theme.surface, -1
-            )
 
         cv2.line(
             frame,
@@ -1668,6 +2164,8 @@ class MenuControlledEnd(ControlledEnd):
             )[0][0]
             + 12,
         )
+        # Reserve the badge width first, then ellipsize the label into what
+        # is left; the 45% cap keeps long values from swallowing the row.
         value_width = min(
             int((x2 - x1) * 0.45), value_badge_width
         )
@@ -1691,6 +2189,7 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def _draw_preview(self, frame) -> None:
+        """Draw the preview strip describing the highlighted item."""
         if not self._show_preview or not self._current_options:
             return
         theme = self._menu_theme
@@ -1728,6 +2227,8 @@ class MenuControlledEnd(ControlledEnd):
         )
 
         item_type = option["type"].lower()
+        # Configs may provide their own hint; otherwise derive one from the
+        # item type so every screen has some guidance.
         hint = option.get("hint")
         if not hint:
             if item_type == MenuItemType.NUMERAL:
@@ -1756,6 +2257,7 @@ class MenuControlledEnd(ControlledEnd):
             )
 
     def _draw_numeric_edit(self, frame) -> None:
+        """Draw the full-screen numeric editor: value, track and range."""
         theme = self._menu_theme
         option = self._current_options[self._current_index]
         value = self._value_temp if self._value_temp is not None else option["value"]
@@ -1764,8 +2266,12 @@ class MenuControlledEnd(ControlledEnd):
             maximum = float(option["max"])
             numeric = float(value)
         except (KeyError, TypeError, ValueError):
+            # Bad or hand-edited config must not break rendering; fall back
+            # to a unit range instead of raising.
             minimum, maximum, numeric = 0.0, 1.0, 0.0
         span = maximum - minimum
+        # The knob eases toward the committed value during an edit.
+        display = self._numeric_position(numeric)
 
         text = self._format_value(option, value)
         (text_width, _), _ = self._measure(
@@ -1799,7 +2305,9 @@ class MenuControlledEnd(ControlledEnd):
         x2 = self._width - self._padding[2] - 8
         y = self._content_top + 72
         self._rounded_rect(frame, x1, y - 3, x2, y + 3, theme.surface_alt, 3)
-        fraction = 0.0 if span <= 0 else (numeric - minimum) / span
+        # Guard against a zero span and clamp out-of-range stored values so
+        # the knob cannot be drawn outside the track.
+        fraction = 0.0 if span <= 0 else (display - minimum) / span
         fraction = min(1.0, max(0.0, fraction))
         knob_x = int(x1 + (x2 - x1) * fraction)
         self._rounded_rect(frame, x1, y - 2, knob_x, y + 2, theme.accent, 2)
@@ -1842,14 +2350,138 @@ class MenuControlledEnd(ControlledEnd):
 
     @classmethod
     def _option_window(cls, selected: int, count: int) -> tuple[int, int]:
+        """Return (first visible index, visible count) for a choice list."""
         visible = min(cls.OPTION_VISIBLE_COUNT, count)
+        # Centre the selection in the window, then clamp so the window
+        # still fills up at the start and end of the list.
         start = min(
             max(0, selected - cls.OPTION_VISIBLE_COUNT // 2),
             max(0, count - visible),
         )
         return start, visible
 
+    def _option_list_geometry(
+        self, selected: int, count: int
+    ) -> tuple[int, int, int, int]:
+        """Return (start, visible, row_height, block_top) for the editor."""
+
+        start, visible = self._option_window(selected, count)
+        list_top = self._content_top + 34
+        available = max(1, self._content_bottom - list_top)
+        row_height = min(
+            28,
+            max(18, available // max(1, visible)),
+        )
+        block_height = row_height * visible
+        block_top = list_top + max(
+            0, (available - block_height) // 2
+        )
+        return start, visible, row_height, block_top
+
+    def _draw_option_highlight(
+        self, frame, row_top: int, row_height: int, x1: int, x2: int
+    ) -> None:
+        """Draw the selection highlight for the scrolling option list."""
+        theme = self._menu_theme
+        retro = self._retro_style
+        if retro == "win7":
+            selection_bg = self._blend(
+                theme.surface_alt, theme.accent, 0.25
+            )
+            self._rounded_rect(
+                frame,
+                x1 + 2,
+                row_top + 1,
+                x2 - 2,
+                row_top + row_height - 2,
+                selection_bg,
+                3,
+            )
+        elif retro == "aero":
+            self._glass_rect(
+                frame,
+                x1 + 2,
+                row_top + 1,
+                x2 - 2,
+                row_top + row_height - 2,
+                4,
+                self._blend(theme.accent, (255, 255, 255), 0.55),
+                theme.accent,
+                gloss=False,
+            )
+        elif retro:
+            cv2.rectangle(
+                frame,
+                (x1 + 2, row_top + 1),
+                (x2 - 2, row_top + row_height - 2),
+                theme.accent,
+                -1,
+            )
+        else:
+            self._rounded_rect(
+                frame,
+                x1,
+                row_top + 1,
+                x2,
+                row_top + row_height - 2,
+                theme.surface_alt,
+                5,
+            )
+            cv2.rectangle(
+                frame,
+                (x1 + 2, row_top + 6),
+                (x1 + 5, row_top + row_height - 7),
+                theme.accent,
+                -1,
+            )
+
+    def _draw_option_row(
+        self,
+        frame,
+        choice: dict,
+        chosen: bool,
+        row_top: int,
+        row_height: int,
+        x1: int,
+        x2: int,
+    ) -> None:
+        """Draw one choice row, enlarged and accented when chosen."""
+        theme = self._menu_theme
+        retro = self._retro_style
+        # The chosen row uses the larger scale so the selection reads even
+        # without the highlight behind it.
+        scale = (
+            self._big_font_scale if chosen else self._small_font_scale
+        )
+        text = self._fit_text(
+            str(choice.get("content", "")),
+            self._width - 2 * self._padding[0] - 24,
+            scale,
+        )
+        height = self._pixel_height(scale)
+        (text_width, _), _ = self._measure(
+            text, theme.font_face, scale, 1
+        )
+        if chosen and retro:
+            text_color = theme.selection_text or theme.accent_text
+        elif chosen:
+            text_color = theme.accent
+        else:
+            text_color = theme.text_dim
+        self._renderer.draw(
+            frame,
+            text,
+            (
+                (self._width - text_width) // 2,
+                row_top + (row_height + height) // 2 - 1,
+            ),
+            height,
+            text_color,
+            1,
+        )
+
     def _draw_option_edit(self, frame) -> None:
+        """Draw the scrolling option picker with arrows and a window."""
         theme = self._menu_theme
         option = self._current_options[self._current_index]
         value = self._value_temp if self._value_temp is not None else option["value"]
@@ -1906,19 +2538,12 @@ class MenuControlledEnd(ControlledEnd):
 
         # Show a window of choices around the selection instead of only the
         # current/previous/next values.
-        start, visible = self._option_window(selected, len(choices))
+        _start, visible, row_height, block_top = (
+            self._option_list_geometry(selected, len(choices))
+        )
         x1 = self._padding[0]
         x2 = self._width - self._padding[2]
-        list_top = self._content_top + 34
-        available = max(1, self._content_bottom - list_top)
-        row_height = min(
-            28,
-            max(18, available // max(1, visible)),
-        )
         block_height = row_height * visible
-        block_top = list_top + max(
-            0, (available - block_height) // 2
-        )
         retro = self._retro_style
         if retro == "aero":
             self._glass_rect(
@@ -1932,8 +2557,7 @@ class MenuControlledEnd(ControlledEnd):
                 theme.surface_alt,
                 border=theme.border,
             )
-        elif retro in {"luna", "win7", "win10"}:
-            radius = 4 if retro == "win10" else 6
+        elif retro == "win7":
             self._rounded_rect(
                 frame,
                 x1,
@@ -1941,17 +2565,8 @@ class MenuControlledEnd(ControlledEnd):
                 x2,
                 block_top + block_height + 4,
                 theme.surface,
-                radius,
+                6,
             )
-            if retro == "win10":
-                cv2.rectangle(
-                    frame,
-                    (x1, block_top - 4),
-                    (x2, block_top + block_height + 4),
-                    theme.border,
-                    1,
-                    cv2.LINE_AA,
-                )
         elif retro == "win2000":
             self._bevel_rect(
                 frame,
@@ -1963,118 +2578,52 @@ class MenuControlledEnd(ControlledEnd):
                 raised=False,
             )
 
-        for row in range(visible):
-            index = start + row
-            choice = choices[index]
-            chosen = index == selected
-            scale = (
-                self._big_font_scale
-                if chosen
-                else self._small_font_scale
+        # Scroll the window with the eased position so motion begins before
+        # the highlight reaches the edge of the visible block.
+        position = self._option_position(selected)
+        max_start = float(max(0, len(choices) - visible))
+        start_pos = min(
+            max(0.0, position - visible // 2), max_start
+        )
+
+        # Draw the list on a copy so partially visible rows during the
+        # scroll animation stay clipped to the list block.
+        overlay = frame.copy()
+        highlight_top = block_top + (position - start_pos) * row_height
+        self._draw_option_highlight(
+            overlay, int(round(highlight_top)), row_height, x1, x2
+        )
+        # One row of overscan on each side covers fractional scroll
+        # offsets; the blit below clips anything outside the block.
+        first = max(0, int(math.floor(start_pos)) - 1)
+        last = min(
+            len(choices) - 1,
+            int(math.ceil(start_pos)) + visible,
+        )
+        for index in range(first, last + 1):
+            row_top = block_top + (index - start_pos) * row_height
+            if row_top + row_height < block_top - 4:
+                continue
+            if row_top > block_top + block_height + 4:
+                continue
+            self._draw_option_row(
+                overlay,
+                choices[index],
+                index == selected,
+                int(round(row_top)),
+                row_height,
+                x1,
+                x2,
             )
-            text = self._fit_text(
-                str(choice.get("content", "")),
-                self._width - 2 * self._padding[0] - 24,
-                scale,
-            )
-            height = self._pixel_height(scale)
-            row_top = block_top + row * row_height
-            if chosen and retro == "win7":
-                selection_bg = self._blend(
-                    theme.surface_alt, theme.accent, 0.25
-                )
-                self._rounded_rect(
-                    frame,
-                    x1 + 2,
-                    row_top + 1,
-                    x2 - 2,
-                    row_top + row_height - 2,
-                    selection_bg,
-                    3,
-                )
-            elif chosen and retro == "aero":
-                self._glass_rect(
-                    frame,
-                    x1 + 2,
-                    row_top + 1,
-                    x2 - 2,
-                    row_top + row_height - 2,
-                    4,
-                    self._blend(theme.accent, (255, 255, 255), 0.55),
-                    theme.accent,
-                    gloss=False,
-                )
-            elif chosen and retro == "win10":
-                self._rounded_rect(
-                    frame,
-                    x1 + 2,
-                    row_top + 1,
-                    x2 - 2,
-                    row_top + row_height - 2,
-                    theme.accent,
-                    2,
-                )
-            elif chosen and retro:
-                if retro == "luna":
-                    self._rounded_rect(
-                        frame,
-                        x1 + 2,
-                        row_top + 1,
-                        x2 - 2,
-                        row_top + row_height - 2,
-                        theme.accent,
-                        4,
-                    )
-                else:
-                    cv2.rectangle(
-                        frame,
-                        (x1 + 2, row_top + 1),
-                        (x2 - 2, row_top + row_height - 2),
-                        theme.accent,
-                        -1,
-                    )
-            elif chosen:
-                self._rounded_rect(
-                    frame,
-                    x1,
-                    row_top + 1,
-                    x2,
-                    row_top + row_height - 2,
-                    theme.surface_alt,
-                    5,
-                )
-                cv2.rectangle(
-                    frame,
-                    (x1 + 2, row_top + 6),
-                    (x1 + 5, row_top + row_height - 7),
-                    theme.accent,
-                    -1,
-                )
-            (text_width, _), _ = self._measure(
-                text, theme.font_face, scale, 1
-            )
-            if chosen and retro:
-                text_color = theme.selection_text or theme.accent_text
-            elif chosen:
-                text_color = theme.accent
-            else:
-                text_color = theme.text_dim
-            self._text(
-                frame,
-                text,
-                (
-                    (self._width - text_width) // 2,
-                    row_top + (row_height + height) // 2 - 1,
-                ),
-                theme.font_face,
-                scale,
-                text_color,
-                1,
-                cv2.LINE_AA,
-            )
+        y1 = max(0, block_top - 4)
+        y2 = min(self._height, block_top + block_height + 4)
+        x2c = min(self._width, x2 + 1)
+        frame[y1:y2, x1:x2c] = overlay[y1:y2, x1:x2c]
 
     def _draw_power_confirm(self, frame) -> None:
+        """Draw the modal confirmation for power/service actions."""
         theme = self._menu_theme
+        # Size to the smallest supported panel and centre the dialog.
         width = min(250, self._width - 20)
         height = 86
         x1 = (self._width - width) // 2
@@ -2082,14 +2631,7 @@ class MenuControlledEnd(ControlledEnd):
         x2 = x1 + width
         y2 = y1 + height
         retro = self._retro_style
-        if retro == "luna":
-            self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 8)
-            cv2.rectangle(
-                frame, (x1 + 1, y1 + 1), (x2 - 1, y1 + 22),
-                theme.header_bg, -1,
-            )
-            self._rounded_rect(frame, x1, y1, x2, y2, theme.accent, 8, 1)
-        elif retro == "win2000":
+        if retro == "win2000":
             self._bevel_rect(
                 frame, x1, y1, x2, y2, theme.surface_alt, raised=True
             )
@@ -2127,27 +2669,24 @@ class MenuControlledEnd(ControlledEnd):
                 gloss=False,
             )
             self._rounded_rect(frame, x1, y1, x2, y2, theme.border, 8, 1)
-        elif retro == "win10":
-            self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 4)
-            cv2.rectangle(
-                frame, (x1 + 1, y1 + 1), (x2 - 1, y1 + 22),
-                theme.accent, -1,
-            )
-            self._rounded_rect(frame, x1, y1, x2, y2, theme.border, 4, 1)
         else:
             self._rounded_rect(frame, x1, y1, x2, y2, theme.surface, 8)
             self._rounded_rect(frame, x1, y1, x2, y2, theme.danger, 8, 2)
 
+        # The prompt depends on which destructive action is pending; an
+        # OPTION value may be a {"content", "value"} dict.
         action = ""
         if isinstance(self._confirm_option, dict):
             action = self._confirm_option.get("value")
             if isinstance(action, dict):
                 action = action.get("value")
-        title = tr(
-            "Shut down system?"
-            if action == "shutdown"
-            else "Reboot system?"
-        )
+        if action == "shutdown":
+            confirm_text = "Shut down system?"
+        elif action == "restart_service":
+            confirm_text = "Restart service?"
+        else:
+            confirm_text = "Reboot system?"
+        title = tr(confirm_text)
         (title_width, _), _ = self._measure(
             title, theme.font_face, self._font_scale, 1
         )
@@ -2186,6 +2725,7 @@ class MenuControlledEnd(ControlledEnd):
         second: tuple[int, int, int],
         fraction: float,
     ) -> tuple[int, int, int]:
+        """Linearly blend two BGR colours (0.0 = first, 1.0 = second)."""
         return tuple(
             int(first[index] + (second[index] - first[index]) * fraction)
             for index in range(3)
@@ -2263,35 +2803,20 @@ class MenuControlledEnd(ControlledEnd):
         if border is not None:
             self._rounded_rect(frame, x1, y1, x2, y2, border, radius, 1)
 
-    def _draw_retro_header(self, frame, luna: bool) -> None:
+    def _draw_win2000_header(self, frame) -> None:
+        """Draw the Win2000-style header and fake window buttons."""
         theme = self._menu_theme
         height = self._header_height
-        if luna:
-            top = (255, 150, 60)
-            bottom = theme.header_bg
-            for y in range(height):
-                color = self._blend(
-                    top, bottom, y / max(1, height - 1)
-                )
-                cv2.line(frame, (0, y), (self._width, y), color, 1)
-            cv2.line(
-                frame,
-                (0, height - 1),
-                (self._width, height - 1),
-                (255, 255, 255),
-                1,
-            )
-        else:
-            cv2.rectangle(
-                frame, (0, 0), (self._width, height), theme.header_bg, -1
-            )
-            cv2.line(
-                frame,
-                (0, height - 1),
-                (self._width, height - 1),
-                (255, 255, 255),
-                1,
-            )
+        cv2.rectangle(
+            frame, (0, 0), (self._width, height), theme.header_bg, -1
+        )
+        cv2.line(
+            frame,
+            (0, height - 1),
+            (self._width, height - 1),
+            (255, 255, 255),
+            1,
+        )
 
         title = self._title or ""
         self._text(
@@ -2309,84 +2834,66 @@ class MenuControlledEnd(ControlledEnd):
         (page_width, _), _ = self._measure(
             page_text, theme.font_face, self._small_font_scale, 1
         )
-        if luna:
-            pill_width = page_width + 12
-            x2 = self._width - self._padding[2]
-            x1 = x2 - pill_width
-            y1 = (height - 14) // 2
-            self._rounded_rect(
-                frame, x1, y1, x2, y1 + 14, theme.surface_alt, 7
-            )
-            self._text(
+        controls = 3
+        box = 11
+        gap = 2
+        x = self._width - self._padding[2] - controls * box - gap
+        page_x = x - page_width - 6
+        self._text(
+            frame,
+            page_text,
+            (page_x, height - 5),
+            theme.font_face,
+            self._small_font_scale,
+            theme.accent_text,
+            1,
+            cv2.LINE_AA,
+        )
+        for index in range(controls):
+            bx = x + index * (box + gap)
+            self._bevel_rect(
                 frame,
-                page_text,
-                (x1 + 6, y1 + 11),
-                theme.font_face,
-                self._small_font_scale,
-                theme.accent,
-                1,
-                cv2.LINE_AA,
+                bx,
+                4,
+                bx + box,
+                4 + box,
+                theme.surface_alt,
+                raised=True,
             )
-        else:
-            controls = 3
-            box = 11
-            gap = 2
-            x = self._width - self._padding[2] - controls * box - gap
-            page_x = x - page_width - 6
-            self._text(
-                frame,
-                page_text,
-                (page_x, height - 5),
-                theme.font_face,
-                self._small_font_scale,
-                theme.accent_text,
-                1,
-                cv2.LINE_AA,
-            )
-            for index in range(controls):
-                bx = x + index * (box + gap)
-                self._bevel_rect(
+            if index == 0:  # minimise
+                cv2.line(
                     frame,
-                    bx,
-                    4,
-                    bx + box,
-                    4 + box,
-                    theme.surface_alt,
-                    raised=True,
+                    (bx + 3, 4 + box - 4),
+                    (bx + box - 3, 4 + box - 4),
+                    (0, 0, 0),
+                    1,
                 )
-                if index == 0:  # minimise
-                    cv2.line(
-                        frame,
-                        (bx + 3, 4 + box - 4),
-                        (bx + box - 3, 4 + box - 4),
-                        (0, 0, 0),
-                        1,
-                    )
-                elif index == 1:  # maximise
-                    cv2.rectangle(
-                        frame,
-                        (bx + 3, 7),
-                        (bx + box - 3, 4 + box - 3),
-                        (0, 0, 0),
-                        1,
-                    )
-                else:  # close
-                    cv2.line(
-                        frame,
-                        (bx + 3, 7),
-                        (bx + box - 3, 4 + box - 3),
-                        (0, 0, 0),
-                        1,
-                    )
-                    cv2.line(
-                        frame,
-                        (bx + box - 3, 7),
-                        (bx + 3, 4 + box - 3),
-                        (0, 0, 0),
-                        1,
-                    )
+            elif index == 1:  # maximise
+                cv2.rectangle(
+                    frame,
+                    (bx + 3, 7),
+                    (bx + box - 3, 4 + box - 3),
+                    (0, 0, 0),
+                    1,
+                )
+            else:  # close
+                cv2.line(
+                    frame,
+                    (bx + 3, 7),
+                    (bx + box - 3, 4 + box - 3),
+                    (0, 0, 0),
+                    1,
+                )
+                cv2.line(
+                    frame,
+                    (bx + box - 3, 7),
+                    (bx + 3, 4 + box - 3),
+                    (0, 0, 0),
+                    1,
+                )
 
     def _draw_win7_header(self, frame) -> None:
+        """Draw the Win7-style gradient header and page pill."""
         theme = self._menu_theme
         height = self._header_height
         top = (210, 160, 100)
@@ -2435,6 +2942,7 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def _draw_aero_header(self, frame) -> None:
+        """Draw the Aero-glass header with a text shadow and page pill."""
         theme = self._menu_theme
         height = self._header_height
         self._glass_rect(
@@ -2510,49 +3018,8 @@ class MenuControlledEnd(ControlledEnd):
             cv2.LINE_AA,
         )
 
-    def _draw_win10_header(self, frame) -> None:
-        theme = self._menu_theme
-        height = self._header_height
-        cv2.rectangle(
-            frame, (0, 0), (self._width, height), theme.header_bg, -1
-        )
-        cv2.rectangle(
-            frame, (0, 0), (3, height), theme.accent, -1
-        )
-        title = self._title or ""
-        self._text(
-            frame,
-            title,
-            (self._padding[0] + 4, height - 5),
-            theme.font_face,
-            self._font_scale,
-            theme.header_text or theme.text,
-            1,
-            cv2.LINE_AA,
-        )
-        page_text = f"{self._current_page + 1}/{max(1, self._page_count)}"
-        (page_width, _), _ = self._measure(
-            page_text, theme.font_face, self._small_font_scale, 1
-        )
-        self._text(
-            frame,
-            page_text,
-            (self._width - self._padding[2] - page_width, height - 5),
-            theme.font_face,
-            self._small_font_scale,
-            theme.header_text_dim or theme.text_dim,
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.line(
-            frame,
-            (0, height - 1),
-            (self._width, height - 1),
-            theme.accent,
-            1,
-        )
-
     def _draw_retro_row(self, frame, index: int, option: dict) -> None:
+        """Draw one list row using the active retro skin."""
         theme = self._menu_theme
         style = self._retro_style
         y1, y2 = self._row_geometry(index)
@@ -2561,38 +3028,7 @@ class MenuControlledEnd(ControlledEnd):
         selected = index == self._current_index and self._select_index is None
         enabled = bool(option.get("enable", True))
 
-        if style == "luna":
-            if selected:
-                self._rounded_rect(
-                    frame, x1 + 3, y1 + 1, x2 - 3, y2 - 2,
-                    theme.accent, 4,
-                )
-                cv2.line(
-                    frame,
-                    (x1 + 8, y1 + 3),
-                    (x2 - 8, y1 + 3),
-                    (255, 220, 180),
-                    1,
-                )
-            else:
-                row_bg = (
-                    theme.surface if index % 2 == 0
-                    else theme.surface_alt
-                )
-                cv2.rectangle(frame, (x1, y1), (x2, y2 - 1), row_bg, -1)
-            cv2.line(
-                frame, (x1, y2 - 1), (x2, y2 - 1),
-                theme.border, 1,
-            )
-            foreground = (
-                theme.accent_text if selected
-                else (theme.text if enabled else theme.text_dim)
-            )
-            icon_color = (
-                theme.accent_text if selected
-                else (theme.accent if enabled else theme.text_dim)
-            )
-        elif style == "win2000":
+        if style == "win2000":
             if selected:
                 cv2.rectangle(
                     frame, (x1, y1), (x2, y2 - 1), theme.accent, -1
@@ -2650,7 +3086,7 @@ class MenuControlledEnd(ControlledEnd):
                 theme.accent if selected
                 else (theme.accent if enabled else theme.text_dim)
             )
-        elif style == "aero":
+        else:  # aero
             if selected:
                 self._glass_rect(
                     frame,
@@ -2690,32 +3126,6 @@ class MenuControlledEnd(ControlledEnd):
                 (theme.selection_text or theme.accent_text)
                 if selected
                 else (theme.accent if enabled else theme.text_dim)
-            )
-        else:  # win10
-            if selected:
-                self._rounded_rect(
-                    frame, x1 + 2, y1 + 1, x2 - 2, y2 - 2,
-                    theme.accent, 2,
-                )
-            else:
-                row_bg = (
-                    theme.surface if index % 2 == 0
-                    else theme.surface_alt
-                )
-                cv2.rectangle(frame, (x1, y1), (x2, y2 - 1), row_bg, -1)
-            cv2.line(
-                frame, (x1, y2 - 1), (x2, y2 - 1),
-                theme.border, 1,
-            )
-            foreground = (
-                (theme.selection_text or theme.accent_text)
-                if selected
-                else (theme.text if enabled else theme.text_dim)
-            )
-            icon_color = (
-                (theme.selection_text or theme.accent_text)
-                if selected
-                else (theme.text_dim if enabled else theme.text_dim)
             )
 
         icon_x = x1 + 5
@@ -2803,20 +3213,7 @@ class MenuControlledEnd(ControlledEnd):
         bx1 = x2 - badge_width - 4
         by1 = (y1 + y2 - badge_height) // 2
         by2 = by1 + badge_height
-        if style == "luna":
-            background = (
-                theme.surface_alt if not selected else theme.surface
-            )
-            foreground_badge = theme.accent
-            self._rounded_rect(
-                frame, bx1, by1, bx1 + badge_width, by2,
-                background, badge_height // 2,
-            )
-            cv2.rectangle(
-                frame, (bx1, by1), (bx1 + badge_width, by2),
-                theme.accent, 1, cv2.LINE_AA,
-            )
-        elif style == "win2000":
+        if style == "win2000":
             background = theme.surface_alt
             foreground_badge = theme.text
             self._bevel_rect(
@@ -2834,7 +3231,7 @@ class MenuControlledEnd(ControlledEnd):
                 frame, (bx1, by1), (bx1 + badge_width, by2),
                 theme.accent, 1, cv2.LINE_AA,
             )
-        elif style == "aero":
+        else:  # aero
             foreground_badge = theme.accent
             self._glass_rect(
                 frame,
@@ -2847,19 +3244,6 @@ class MenuControlledEnd(ControlledEnd):
                 theme.surface,
                 border=theme.border,
                 gloss=False,
-            )
-        else:  # win10
-            background = theme.surface_alt
-            foreground_badge = (
-                theme.selection_text or theme.text
-            )
-            self._rounded_rect(
-                frame, bx1, by1, bx1 + badge_width, by2,
-                background, 2,
-            )
-            cv2.rectangle(
-                frame, (bx1, by1), (bx1 + badge_width, by2),
-                theme.border, 1, cv2.LINE_AA,
             )
         self._text(
             frame,
@@ -2876,6 +3260,7 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def _draw_retro_preview(self, frame) -> None:
+        """Draw the preview strip using the active retro skin."""
         if not self._show_preview or not self._current_options:
             return
         theme = self._menu_theme
@@ -2905,19 +3290,13 @@ class MenuControlledEnd(ControlledEnd):
                 theme.accent, -1,
             )
         else:
-            radius = 4 if self._retro_style == "win10" else 5
             self._rounded_rect(
-                frame, x1, y1, x2, y2, theme.surface, radius
+                frame, x1, y1, x2, y2, theme.surface, 5
             )
             cv2.rectangle(
                 frame, (x1 + 2, y1 + 5), (x1 + 5, y2 - 5),
                 theme.accent, -1,
             )
-            if self._retro_style == "win10":
-                cv2.rectangle(
-                    frame, (x1, y1), (x2, y2),
-                    theme.border, 1, cv2.LINE_AA,
-                )
 
         label = self._fit_text(
             str(option.get("content", "")),
@@ -2949,27 +3328,25 @@ class MenuControlledEnd(ControlledEnd):
             cv2.LINE_AA,
         )
 
-    def _decorate_retro(self, style: str) -> None:
+    def _compose_retro(self, style: str) -> np.ndarray:
+        """Compose a frame for one of the legacy Windows skins."""
         self._retro_style = style
         theme = self._menu_theme
         sketch = np.full(
             (self._height, self._width, 3), theme.background, np.uint8
         )
-        if style == "luna":
-            self._draw_retro_header(sketch, True)
-        elif style == "win2000":
-            self._draw_retro_header(sketch, False)
+        if style == "win2000":
+            self._draw_win2000_header(sketch)
         elif style == "win7":
             self._draw_win7_header(sketch)
-        elif style == "aero":
+        else:  # aero
             self._draw_aero_header(sketch)
-        else:
-            self._draw_win10_header(sketch)
         if self._select_index is None:
             for index, option in enumerate(self._current_options):
                 self._draw_retro_row(sketch, index, option)
             self._draw_retro_preview(sketch)
         else:
+            # Editors replace the list area but keep the skin's chrome.
             item_type = self._current_options[
                 self._current_index
             ]["type"].lower()
@@ -2985,9 +3362,9 @@ class MenuControlledEnd(ControlledEnd):
         if self._confirm_power:
             self._draw_power_confirm(sketch)
             self._flush_text(sketch)
-        self._frame_list.put(sketch)
+        return sketch
 
-    def _decorate_classic(self) -> None:
+    def _compose_classic(self) -> np.ndarray:
         """Draw the original pre-0.3 menu layout.
 
         The classic theme keeps the italic Hershey text, slide bar, packed
@@ -3021,17 +3398,10 @@ class MenuControlledEnd(ControlledEnd):
         if self._confirm_power:
             self._draw_power_confirm(sketch)
             self._flush_text(sketch)
-        self._frame_list.put(sketch)
+        return sketch
 
-    def decorate(self):
-        style = self._menu_theme.render_style
-        if style == "classic":
-            self._decorate_classic()
-            return
-        if style in {"luna", "win2000", "win7", "win10", "aero"}:
-            self._decorate_retro(style)
-            return
-
+    def _compose_modern(self) -> np.ndarray:
+        """Compose the modern header/card/footer layout."""
         self._retro_style = None
         theme = self._menu_theme
         sketch = np.full(
@@ -3058,9 +3428,23 @@ class MenuControlledEnd(ControlledEnd):
         if self._confirm_power:
             self._draw_power_confirm(sketch)
             self._flush_text(sketch)
-        self._frame_list.put(sketch)
+        return sketch
+
+    def _compose_frame(self) -> np.ndarray:
+        """Dispatch to the renderer for the active theme style."""
+        style = self._menu_theme.render_style
+        if style == "classic":
+            return self._compose_classic()
+        if style in {"win2000", "win7", "aero"}:
+            return self._compose_retro(style)
+        return self._compose_modern()
+
+    def decorate(self):
+        """Compose the current state and queue the frame for main_loop."""
+        self._frame_list.put(self._compose_frame())
 
     def _next_step(self):
+        """Cycle to the next numeric step size, wrapping at the end."""
         item: dict = self._current_options[self._current_index]
         if 'step_options' not in item.keys():
             return
@@ -3071,6 +3455,7 @@ class MenuControlledEnd(ControlledEnd):
             item['step'] = item['step_options'][current_step_index + 1]
 
     def _previous_step(self):
+        """Cycle to the previous numeric step size, wrapping at the start."""
         item: dict = self._current_options[self._current_index]
         if 'step_options' not in item.keys():
             return
@@ -3080,49 +3465,84 @@ class MenuControlledEnd(ControlledEnd):
         else:
             item['step'] = item['step_options'][current_step_index - 1]
 
+    @staticmethod
+    def _round_to_step(value, step):
+        """Round a numeric value to the precision implied by its step.
+
+        Repeatedly adding 0.1 in binary floating point produces values such
+        as 0.9999999999999999; rounding keeps the stored menu and the camera
+        control clean.
+        """
+
+        try:
+            exponent = Decimal(str(step)).as_tuple().exponent
+        except (TypeError, ValueError):
+            return value
+        decimals = max(0, -exponent)
+        try:
+            return round(value, decimals)
+        except TypeError:
+            return value
+
     def _value_plus(self):
+        """Increase the edited numeric value by one step, clamped to max."""
         item = self._current_options[self._select_index]
         if item['type'] != MenuItemType.NUMERAL:
             return
         value, step, ma = self._value_temp, item['step'], item['max']
-        value += step
-        if value >= ma:
-            value = ma
-        self._value_temp = value
+        target = self._round_to_step(value + step, step)
+        # Overshooting snaps to the bound rather than wrapping.
+        if target >= ma:
+            target = ma
+        self._value_temp = target
+        self._start_value_animation(value, target)
 
     def _value_minus(self):
+        """Decrease the edited numeric value by one step, clamped to min."""
         item = self._current_options[self._select_index]
         if item['type'] != MenuItemType.NUMERAL:
             return
         value, step, mi = self._value_temp, item['step'], item['min']
-        value -= step
-        if value <= mi:
-            value = mi
-        self._value_temp = value
+        target = self._round_to_step(value - step, step)
+        # Undershooting snaps to the bound rather than wrapping.
+        if target <= mi:
+            target = mi
+        self._value_temp = target
+        self._start_value_animation(value, target)
 
     def _option_up(self):
+        """Move to the previous choice, wrapping past the first."""
         item = self._current_options[self._select_index]
         if item['type'] != MenuItemType.OPTION:
             return
         value, option_list = self._value_temp, item['options']
         option_index = option_list.index(value)
-        self._value_temp = option_list[option_index - 1]
+        target_index = option_index - 1
+        # Choices wrap so every value stays reachable in one direction.
+        if target_index < 0:
+            target_index = len(option_list) - 1
+        self._value_temp = option_list[target_index]
+        self._start_option_animation(option_index, target_index)
         self._preview_theme()
 
     def _option_down(self):
+        """Move to the next choice, wrapping past the last."""
         item = self._current_options[self._select_index]
         if item['type'] != MenuItemType.OPTION:
             return
         value, option_list = self._value_temp, item['options']
         option_index = option_list.index(value)
-        try:
-            self._value_temp = option_list[option_index + 1]
-        except IndexError:
-            self._value_temp = option_list[0]
+        target_index = option_index + 1
+        if target_index >= len(option_list):
+            target_index = 0
+        self._value_temp = option_list[target_index]
+        self._start_option_animation(option_index, target_index)
         self._preview_theme()
 
     def center_press_action(self):
+        """OK: confirm a pending action, commit an edit, or activate."""
         if self._confirm_power:
+            # A second OK is the YES answer to the modal dialog.
             option = self._confirm_option
             self._confirm_power = False
             self._confirm_option = None
@@ -3139,9 +3559,12 @@ class MenuControlledEnd(ControlledEnd):
         self.decorate()
 
     def up_press_action(self):
+        """Up: navigate the list, change step size, or previous choice."""
         if self._select_index is None:
             self.up_action()
             self.decorate()
+            # Short sleep paces held-button repeats so list navigation
+            # cannot run ahead of the display.
             time.sleep(0.2)
         else:
             if self._current_options[self._select_index]['type'] == MenuItemType.NUMERAL:
@@ -3154,6 +3577,7 @@ class MenuControlledEnd(ControlledEnd):
                 time.sleep(0.2)
 
     def down_press_action(self):
+        """Down: navigate the list, change step size, or next choice."""
         if self._select_index is None:
             self.down_action()
             self.decorate()
@@ -3169,6 +3593,7 @@ class MenuControlledEnd(ControlledEnd):
                 time.sleep(0.2)
 
     def left_press_action(self):
+        """Left: move up, decrease a numeric value, or previous choice."""
         if self._select_index is None:
             self.up_action()
             self.decorate()
@@ -3184,6 +3609,7 @@ class MenuControlledEnd(ControlledEnd):
                 time.sleep(0.2)
 
     def right_press_action(self):
+        """Right: move down, increase a numeric value, or next choice."""
         if self._select_index is None:
             self.down_action()
             self.decorate()
@@ -3202,12 +3628,18 @@ class MenuControlledEnd(ControlledEnd):
         self.center_press_action()
 
     def cross_press_action(self):
+        """Back/Cancel: dismiss the modal, editor, or current page."""
         if self._confirm_power:
+            # X is the NO answer to the power dialog.
             self._confirm_power = False
             self._confirm_option = None
             self.decorate()
             return
         if self._select_index is not None:
+            # Cancel discards _value_temp implicitly: the option's stored
+            # value was never touched while editing.
+            self._cancel_option_animation()
+            self._cancel_value_animation()
             self._cancel_theme_preview()
             self._select_index = None
             self.decorate()
@@ -3216,13 +3648,16 @@ class MenuControlledEnd(ControlledEnd):
                 self._jump_to_previous()
                 self.decorate()
             except IndexError:
+                # Empty route stack: this is the root page, so exit the end.
                 self._irq(self._from)
 
     def cross_long_press_action(self):
+        """Long Back exits the menu end from anywhere."""
         self._cancel_theme_preview()
         self._irq(self._from)
 
     def rotary_encoder_counter_clockwise(self):
+        """Encoder turn: navigate down, decrease value, previous choice."""
         if self._select_index is None:
             self.down_action()
             self.decorate()
@@ -3238,6 +3673,8 @@ class MenuControlledEnd(ControlledEnd):
                 time.sleep(0.2)
 
     def rotary_encoder_clockwise(self):
+        """Encoder turn: navigate up, increase value, next choice."""
+        # The knob's physical orientation maps clockwise to Up.
         if self._select_index is None:
             self.up_action()
             self.decorate()
@@ -3256,6 +3693,7 @@ class MenuControlledEnd(ControlledEnd):
         self.center_press_action()
 
     def shutter_press_action(self):
+        """Shutter acts as a second OK button (confirm/commit/activate)."""
         if self._confirm_power:
             self.center_press_action()
             return
@@ -3269,7 +3707,9 @@ class MenuControlledEnd(ControlledEnd):
         pass
 
     def msg_receiver(self, sender, msg):
+        """Enter the menu section named by ``msg`` and report its root."""
         self.set_option(msg)
+        # Remember the owner for replies, IRQ routing and config lookup.
         self._from = sender
         self._msg_sender(
             self._id,
@@ -3281,14 +3721,25 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def on_enter(self, last_id):
+        """Reset transient UI state and queue the first frame."""
         self._frame_list = queue.SimpleQueue()
+        # A confirmation or preview must never survive a screen change.
         self._confirm_power = False
         self._confirm_option = None
+        self._cancel_cursor_animation()
+        self._cancel_option_animation()
+        self._cancel_value_animation()
         self._finish_theme_preview()
         self.decorate()
 
     def on_exit(self):
+        """Cancel previews/animations and blank the screen."""
+        self._cancel_cursor_animation()
+        self._cancel_option_animation()
+        self._cancel_value_animation()
         self._cancel_theme_preview()
+        # A background-coloured frame prevents the previous menu contents
+        # flashing during the controller's transition.
         self._frame_list.put(
             np.full(
                 (self._height, self._width, 3),
@@ -3297,5 +3748,24 @@ class MenuControlledEnd(ControlledEnd):
         )
 
     def main_loop(self):
+        """Yield queued frames; compose at ~60 fps while animating."""
         while True:
-            yield self._frame_list.get(True)
+            if not self._animation_active():
+                # Idle: block until an action queues a frame.
+                yield self._frame_list.get(True)
+                continue
+
+            # Animating: drop stale queued frames and synthesize a fresh
+            # frame each tick until every transition has expired.
+            while self._animation_active():
+                started = time.monotonic()
+                self._expire_animations(started)
+                self._drain_frames()
+                yield self._compose_frame()
+                # Sleep the rest of the frame budget so playback speed does
+                # not depend on how long composition took.
+                delay = self._anim_interval - (
+                    time.monotonic() - started
+                )
+                if delay > 0:
+                    time.sleep(delay)

@@ -61,6 +61,12 @@ def build_ends(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Compose the application, run the controller and clean up.
+
+    Returns a process exit code: 0 after a normal stop, 1 when startup or
+    the render loop fails.
+    """
+
     argv = list(sys.argv if argv is None else argv)
 
     config = load_config()
@@ -71,6 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     closeables = []
 
     def close_all() -> None:
+        # Reverse construction order so consumers stop before the resources
+        # they depend on (e.g. the camera before the display it draws to).
         for close in reversed(closeables):
             try:
                 close()
@@ -98,7 +106,10 @@ def main(argv: list[str] | None = None) -> int:
         from chandelier.hardware.sensors.ina230 import INA230
         from chandelier.hardware.sensors.max17048 import MAX17048
         from chandelier.services.network import Network
-        from chandelier.services.preview_server import PreviewServer
+        from chandelier.services.preview_server import (
+            PreviewServer,
+            load_auth_file,
+        )
         from chandelier.services.system_stats import SystemStats
         from chandelier.services.time_sync import SystemTimeManager
 
@@ -133,7 +144,10 @@ def main(argv: list[str] | None = None) -> int:
         network = Network(config.internet_test_url)
         stats = SystemStats(battery, power_monitor, rtc, network)
 
-        preview_server = PreviewServer()
+        preview_server = PreviewServer(
+            auth=load_auth_file(config.preview.auth_file),
+            media_path=[config.camera.path, config.camera.video_path],
+        )
         closeables.append(preview_server.stop)
 
         ends = build_ends(
@@ -148,12 +162,17 @@ def main(argv: list[str] | None = None) -> int:
         controller = Controller(
             display, ends, config, argv, preview_server=preview_server
         )
+        # The web preview drives the same controller entry points as the
+        # physical buttons, so no separate command path is needed.
         preview_server.set_action_handler(controller.handle_action)
         preview_server.set_screen_handler(controller.switch_to)
+        preview_server.set_touch_handler(controller.handle_touch)
         input_panel = GpioInputPanel(config.pin, controller.handle_action)
         closeables.append(input_panel.close)
 
         time_manager = SystemTimeManager(rtc, network, config.ntp_server)
+        # Time sync is best effort: the UI must start even without a network
+        # or when changing the clock needs privileges the service lacks.
         try:
             timestamp = time_manager.get_timestamp()
             time_manager.set_system_time_with_timestamp(timestamp)

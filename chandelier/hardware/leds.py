@@ -6,6 +6,12 @@ from chandelier.config import LedConfig
 
 
 class GpioLed:
+    """Single GPIO-driven LED.
+
+    ``active_high=False`` assumes the LED anode is tied to 3.3 V and the
+    GPIO pin sinks the current.
+    """
+
     def __init__(self, pin: int, active_high: bool = False):
         import gpiozero
 
@@ -27,9 +33,11 @@ class GpioLed:
         return bool(self._device.value)
 
     def close(self) -> None:
+        """Switch the LED off and release the GPIO line."""
         try:
             self._device.off()
         finally:
+            # Release the pin even if switching it off fails.
             self._device.close()
 
 
@@ -41,5 +49,6 @@ class Leds:
         self.blue = GpioLed(config.blue)
 
     def close(self) -> None:
+        """Close both indicator LEDs."""
         self.green.close()
         self.blue.close()

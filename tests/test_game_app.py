@@ -5,6 +5,10 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 
+import pytest
+
+pytest.importorskip("game.app")
+
 from game.app import _parse_args, load_high_score, save_high_score
 
 

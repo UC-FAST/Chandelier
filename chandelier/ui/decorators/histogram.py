@@ -7,7 +7,9 @@ is considerably cheaper on a Raspberry Pi than one rectangle per bin.
 
 Optional constructor arguments control the display: linear/log scaling,
 RGB/luma channels, opacity, a dark backdrop, temporal smoothing, grid and
-border.  The defaults keep the full-frame layout of the original widget.
+border.  Linear scaling clips its top at the 95th percentile of populated
+bins, so one crushed shadow or highlight bin cannot flatten every other bar.
+The defaults keep the full-frame layout of the original widget.
 """
 
 from __future__ import annotations
@@ -23,6 +25,51 @@ _CHANNEL_COLORS = (
 _LUMA_COLOR = (255, 255, 255)
 _GRID_COLOR = (70, 70, 70)
 _BORDER_COLOR = (120, 120, 120)
+CORNER_BOX_WIDTH = 100
+CORNER_BOX_HEIGHT = 64
+CORNER_BOX_MARGIN = 6
+# Clip the scale to this percentile of the populated bins.  A single clipped
+# highlight/shadow bin (or JPEG-compressed blacks) must not flatten the rest.
+LINEAR_SCALE_PERCENTILE = 95.0
+
+
+def corner_padding(
+    width: int,
+    height: int,
+    box_width: int = CORNER_BOX_WIDTH,
+    box_height: int = CORNER_BOX_HEIGHT,
+    margin: int = CORNER_BOX_MARGIN,
+    corner: str = "bottom-right",
+) -> tuple[int, int, int, int]:
+    """Return ``padding`` for a compact histogram box in one corner."""
+
+    width = int(width)
+    height = int(height)
+    box_width = int(box_width)
+    box_height = int(box_height)
+    margin = int(margin)
+
+    horizontal = max(0, width - box_width - margin)
+    vertical = max(0, height - box_height - margin)
+    if corner == "bottom-center":
+        left = max(0, (width - box_width) // 2)
+        right = max(0, width - box_width - left)
+        return left, vertical, right, margin
+    if corner in {"top-left", "top-right"}:
+        top, bottom = margin, vertical
+    elif corner in {"bottom-left", "bottom-right"}:
+        top, bottom = vertical, margin
+    else:
+        raise ValueError(
+            "corner must be top-left, top-right, bottom-left, "
+            "bottom-right or bottom-center"
+        )
+
+    if corner in {"top-left", "bottom-left"}:
+        left, right = margin, horizontal
+    else:
+        left, right = horizontal, margin
+    return left, top, right, bottom
 
 
 def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
@@ -30,6 +77,14 @@ def _clamp(value: float, low: float = 0.0, high: float = 1.0) -> float:
 
 
 class Histogram:
+    """Live RGB or luma histogram with optional smoothing and grid.
+
+    Datasets are recomputed for every decorated frame.  ``padding`` holds
+    ``(left, top, right, bottom)`` insets in pixels; the default places the
+    plot over the whole frame.  Channel colours are BGR and the three
+    channels are added together, so overlaps appear as their mixed colour.
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -47,13 +102,6 @@ class Histogram:
     ):
         if width <= 0 or height <= 0:
             raise ValueError("width and height must be positive")
-        if isinstance(padding, int):
-            padding = (padding,) * 4
-        if len(padding) != 4 or any(value < 0 for value in padding):
-            raise ValueError(
-                "padding must be four non-negative values "
-                "(left, top, right, bottom)"
-            )
 
         scale = str(scale).lower()
         if scale not in {"linear", "log"}:
@@ -64,7 +112,7 @@ class Histogram:
 
         self._width = width
         self._height = height
-        self._padding = tuple(int(value) for value in padding)
+        self.set_padding(padding)
         self._scale = scale
         self._alpha = _clamp(alpha)
         self._background = (
@@ -80,11 +128,25 @@ class Histogram:
         self._min = 0.0
         self._max = 0.0
 
+    def set_padding(self, padding) -> None:
+        """Move the plot area (left, top, right, bottom insets)."""
+
+        if isinstance(padding, int):
+            padding = (padding,) * 4
+        if len(padding) != 4 or any(value < 0 for value in padding):
+            raise ValueError(
+                "padding must be four non-negative values "
+                "(left, top, right, bottom)"
+            )
+        self._padding = tuple(int(value) for value in padding)
+
     # ------------------------------------------------------------------
     # Histogram data
     # ------------------------------------------------------------------
     @staticmethod
     def _as_bgr(frame: np.ndarray) -> np.ndarray:
+        """Return a 3-channel view of a gray or BGRA frame."""
+
         if frame.ndim == 2:
             return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
         if frame.shape[2] == 4:
@@ -92,6 +154,8 @@ class Histogram:
         return frame
 
     def _channel_histograms(self, frame: np.ndarray) -> list[np.ndarray]:
+        """Compute one 256-bin histogram per displayed channel."""
+
         if self._channel_mode == "luma":
             if frame.ndim == 2:
                 gray = frame
@@ -119,13 +183,51 @@ class Histogram:
 
         if len(channel) <= size:
             return channel
+        # reduceat sums variable-width buckets in one C-level pass; doing
+        # the same with a Python loop would dominate the frame budget.
         boundaries = (np.arange(size) * len(channel)) // size
         sums = np.add.reduceat(channel, boundaries)
         counts = np.diff(np.append(boundaries, len(channel)))
         return sums / counts
 
+    @staticmethod
+    def _content_region(frame: np.ndarray) -> np.ndarray:
+        """Drop pure-black letterbox borders before computing the data.
+
+        The gallery letterboxes non-4:3 photos onto a black 320x240 canvas.
+        Counting those bars puts a huge artificial spike in bin 0, which then
+        dominates the linear scale and squeezes every real bar to a few
+        pixels.  Only uniform black edges are removed, so black content inside
+        the picture is still counted.
+        """
+
+        if frame.ndim == 3:
+            non_black = frame[:, :, :3].max(axis=2) > 0
+        else:
+            non_black = frame > 0
+        if not non_black.any():
+            return frame
+
+        rows = np.flatnonzero(non_black.any(axis=1))
+        columns = np.flatnonzero(non_black.any(axis=0))
+        top, bottom = int(rows[0]), int(rows[-1]) + 1
+        left, right = int(columns[0]), int(columns[-1]) + 1
+        if (top, bottom, left, right) == (
+            0,
+            frame.shape[0],
+            0,
+            frame.shape[1],
+        ):
+            return frame
+        return frame[top:bottom, left:right]
+
     def _frame_calc(self, frame: np.ndarray) -> None:
-        frame_height, frame_width = frame.shape[:2]
+        """Refresh the resampled channel data and its cached min/max."""
+
+        # The plot width comes from the display frame, not the trimmed
+        # content, so portrait letterboxing cannot shrink it.
+        frame_width = frame.shape[1]
+        frame = self._content_region(frame)
         pad_left, _, pad_right, _ = self._padding
         horizontal = max(1, frame_width - pad_left - pad_right)
         bin_count = max(1, min(256, horizontal))
@@ -135,6 +237,9 @@ class Histogram:
             for channel in self._channel_histograms(frame)
         ]
 
+        # Exponential moving average of the resampled bins.  The shape
+        # checks guard against a resolution change poisoning the history
+        # with arrays that can no longer be combined.
         if (
             self._smoothing > 0
             and self._data_list
@@ -165,6 +270,8 @@ class Histogram:
     def _draw_background(
         self, frame: np.ndarray, left: int, top: int, right: int, bottom: int
     ) -> None:
+        """Darken or tint the plot region behind the bars."""
+
         if self._background is None or self._background_alpha <= 0:
             return
         region = frame[top:bottom, left:right]
@@ -190,6 +297,8 @@ class Histogram:
     def _draw_grid(
         frame: np.ndarray, left: int, top: int, right: int, bottom: int
     ) -> None:
+        """Draw quarter lines inside the plot rectangle."""
+
         width = right - left
         height = bottom - top
         for fraction in (0.25, 0.5, 0.75):
@@ -203,6 +312,13 @@ class Histogram:
             )
 
     def _bar_heights(self, plot_height: int) -> list[np.ndarray]:
+        """Scale each channel's bins to pixel heights.
+
+        Log mode compresses the long tail of large counts.  Linear mode
+        anchors the bottom at the smallest bin and the top at the 95th
+        percentile, so a single clipped bin cannot flatten the plot.
+        """
+
         if not self._data_list:
             return []
 
@@ -212,8 +328,19 @@ class Histogram:
             high = max(float(np.max(channel)) for channel in transformed)
         else:
             transformed = self._data_list
-            low = min(float(np.min(channel)) for channel in transformed)
-            high = max(float(np.max(channel)) for channel in transformed)
+            # Empty bins say nothing about the scene and would drag the 95th
+            # percentile towards zero, so only populated bins are sampled.
+            populated = np.concatenate(transformed)
+            populated = populated[populated > 0]
+            if populated.size:
+                low = min(
+                    float(np.min(channel)) for channel in transformed
+                )
+                high = float(
+                    np.percentile(populated, LINEAR_SCALE_PERCENTILE)
+                )
+            else:
+                low = high = 0.0
 
         span = high - low
         if span <= 0:
@@ -234,6 +361,8 @@ class Histogram:
         right: int,
         bottom: int,
     ) -> tuple[np.ndarray, np.ndarray]:
+        """Rasterise the channel polygons and return overlay plus mask."""
+
         overlay = np.zeros_like(frame)
         mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         plot_width = right - left
@@ -242,9 +371,14 @@ class Histogram:
         if not heights:
             return overlay, mask
 
+        # One closed polygon per channel (tops followed by the baseline
+        # corners) instead of one rectangle per bin: a single fillPoly is
+        # considerably cheaper at 30 fps on the Pi's CPU.
         bin_count = len(heights[0])
         xs = left + (np.arange(bin_count) + 0.5) * plot_width / bin_count
         baseline = bottom - 1
+        # Reused scratch layer; filling a fresh canvas per channel would
+        # allocate several frame-sized arrays per rendered frame.
         layer = np.zeros_like(frame)
         for index, channel_heights in enumerate(heights):
             points = np.column_stack(
@@ -266,29 +400,45 @@ class Histogram:
 
             layer.fill(0)
             cv2.fillPoly(layer, [points], color, cv2.LINE_AA)
+            # The mask is the union of all three channel shapes, so the
+            # final composite only touches pixels that have data.
             cv2.fillPoly(mask, [points], 255)
+            # Saturating add: overlapping channels light up in the mixed
+            # colour instead of hiding each other.
             cv2.add(overlay, layer, overlay)
         return overlay, mask
 
     def _compose(
         self, frame: np.ndarray, overlay: np.ndarray, mask: np.ndarray
     ) -> None:
+        """Blend the histogram into the frame through ``mask``."""
+
         if cv2.countNonZero(mask) == 0:
             return
         if self._alpha >= 1.0:
             cv2.copyTo(overlay, mask, frame)
         else:
+            # Blend the full image, then copy only masked pixels: building
+            # the blend in place would tint the background rectangle too.
             blended = cv2.addWeighted(
                 overlay, self._alpha, frame, 1.0 - self._alpha, 0
             )
             cv2.copyTo(blended, mask, frame)
 
     def decorate(self, frame: np.ndarray, rotate: int = 0) -> None:
+        """Analyse and draw the histogram onto ``frame`` in place.
+
+        ``rotate`` matches the preview rotation (degrees); the overlay and
+        mask are rotated together so the bars stay aligned with the image.
+        """
+
         if frame is None or frame.size == 0:
             return
         if frame.ndim not in (2, 3):
             return
 
+        # Drawing needs three channels.  Gray frames are expanded and then
+        # converted back; BGRA is drawn on a view of its colour channels.
         grayscale = frame.ndim == 2
         if grayscale:
             canvas = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
@@ -316,6 +466,8 @@ class Histogram:
             canvas, left, top, right, bottom
         )
         if rotate:
+            # Rotate overlay and mask identically; skip the result if the
+            # rotated shape no longer matches (non-square frames).
             rotation_count = (-rotate // 90) % 4
             rotated = np.rot90(overlay, rotation_count)
             rotated_mask = np.rot90(mask, rotation_count)

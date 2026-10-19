@@ -7,7 +7,9 @@ from collections import OrderedDict
 
 logger = logging.getLogger(__name__)
 
-# Open-circuit voltage to state-of-charge approximation for a single Li-ion cell.
+# Open-circuit voltage to state-of-charge approximation for a single Li-ion
+# cell.  Keys are in descending order so the lookup returns the first entry
+# whose threshold is strictly below the measured voltage; no interpolation.
 _VOLTAGE_TO_PERCENT = OrderedDict(
     {
         4.20: 100.0, 4.19: 99.5, 4.18: 99.0, 4.17: 98.0, 4.16: 97.0,
@@ -31,6 +33,13 @@ _VOLTAGE_TO_PERCENT = OrderedDict(
 
 
 class MAX17048:
+    """MAX17048 fuel gauge over I2C (default address 0x36).
+
+    Register values are fixed point with datasheet-defined LSBs: 78.125 uV
+    for voltage and 1/256 percent for state of charge.
+    """
+
+    # 16-bit big-endian registers; addresses from the datasheet.
     REGISTERS = {
         "VCELL": 0x02,
         "SOC": 0x04,
@@ -57,6 +66,7 @@ class MAX17048:
         )
 
     def _read_word(self, register: int) -> int:
+        """Read a big-endian 16-bit register value."""
         msb, lsb = self._bus.read_i2c_block_data(
             self._address, register, 2
         )
@@ -65,6 +75,7 @@ class MAX17048:
     def get_bat(self) -> float:
         """Battery voltage in volts."""
 
+        # VCELL LSB is 78.125 uV (1.25 mV / 16).
         value = self._read_word(self.REGISTERS["VCELL"]) * 0.000078125
         logger.debug("MAX17048 voltage %.3f V", value)
         return value
@@ -72,17 +83,25 @@ class MAX17048:
     def soc(self) -> float:
         """State of charge in percent."""
 
+        # SOC LSB is 1/256 percent.
         return self._read_word(self.REGISTERS["SOC"]) * 3.90625e-05
 
     def version(self) -> int:
+        """Return the chip version register (useful to probe the device)."""
         return self._read_word(self.REGISTERS["VERSION"])
 
     @staticmethod
     def get_battery_percent(voltage: float) -> float | None:
+        """Approximate state of charge from a resting cell voltage.
+
+        Returns ``None`` when the voltage is below the lowest tabulated
+        value (deeply discharged or no cell connected).
+        """
         for threshold, percent in _VOLTAGE_TO_PERCENT.items():
             if voltage > threshold:
                 return percent
         return None
 
     def close(self) -> None:
+        """Release the SMBus handle."""
         self._bus.close()

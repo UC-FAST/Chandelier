@@ -154,3 +154,5 @@ cython_debug/
 **/sslvenv
 pict/
 .vscode/
+# Local HTTP Basic Auth credentials for the web preview
+config/preview_auth.json

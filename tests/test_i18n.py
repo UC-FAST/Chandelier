@@ -73,6 +73,16 @@ def test_new_settings_have_translations():
         assert tuple(tr(key) for key in keys) == values
 
 
+def test_status_bar_layout_translations():
+    for language, expected in (
+        ("zh_CN", "上下"),
+        ("zh_TW", "上下"),
+        ("ru", "Сверху и снизу"),
+    ):
+        translator.set_language(language)
+        assert tr("Top + Bottom") == expected
+
+
 def test_monitor_web_status_translations():
     translator.set_language("zh_CN")
     assert tr("Web") == "网页"
@@ -84,7 +94,7 @@ def test_monitor_web_status_translations():
 
 
 def test_web_page_follows_the_active_language():
-    from chandelier.services.preview_server import _index_html
+    from chandelier.services.preview_server import _gallery_html, _index_html
 
     translator.set_language("zh_CN")
     html = _index_html().decode("utf-8")
@@ -93,6 +103,14 @@ def test_web_page_follows_the_active_language():
     assert ">菜单<" in html
     assert 'alt="实时画面"' in html
     assert "快照" in html
+    assert "图库" in html
+    assert "图库预览" in html
+
+    gallery = _gallery_html().decode("utf-8")
+    assert 'lang="zh_CN"' in gallery
+    assert "图库" in gallery
+    assert "暂无媒体" in gallery
+    assert "下载" in gallery
 
 
 def test_language_from_options():

@@ -39,16 +39,19 @@ class SystemStats:
     cached for a couple of seconds because it may involve subprocess calls.
     """
 
-    _NETWORK_CACHE_SECONDS = 5.0
-    _INTERNET_CACHE_SECONDS = 15.0
-    _CPU_SNAPSHOT_SECONDS = 1.0
-    _THROTTLE_CACHE_SECONDS = 5.0
+    _NETWORK_CACHE_SECONDS = 5.0    # iw/ifconfig subprocesses are not cheap
+    _INTERNET_CACHE_SECONDS = 15.0  # one slow HTTP probe per window is enough
+    _CPU_SNAPSHOT_SECONDS = 1.0     # the camera asks once per rendered frame
+    _FREQUENCY_CACHE_SECONDS = 0.4  # vcgencmd is spawned, not free
+    _THROTTLE_CACHE_SECONDS = 5.0   # throttle flags change slowly
 
     def __init__(self, battery, power_monitor, rtc, network=None):
         self._battery = battery
         self._power_monitor = power_monitor
         self._rtc = rtc
         self._network = network
+        # Every cache stores its sampling time so callers can decide whether
+        # the value is still fresh without blocking on hardware.
         self._network_cache: dict[str, object] | None = None
         self._network_cached_at = 0.0
         self._internet_connected: bool | None = None
@@ -56,6 +59,8 @@ class SystemStats:
         self._internet_probe: threading.Thread | None = None
         self._cpu_snapshot: tuple[float | None, float | None] | None = None
         self._cpu_snapshot_at = 0.0
+        self._frequency: int | None = None
+        self._frequency_at = 0.0
         self._throttle: str | None = None
         self._throttle_at = 0.0
         self._net_counters = None
@@ -65,6 +70,13 @@ class SystemStats:
     # Hardware
     # ------------------------------------------------------------------
     def hardware_report(self) -> dict[str, object]:
+        """Return CPU, memory, disk, temperature, uptime and RTC values.
+
+        Keys are label templates (``"CPU {}%"``) that the monitor screen
+        fills in; keeping the key shape stable lets missing values render as
+        blank instead of requiring special cases.
+        """
+
         try:
             import psutil
         except ImportError:  # pragma: no cover - psutil is a requirement
@@ -81,6 +93,7 @@ class SystemStats:
         try:
             rtc_time = datetime.fromtimestamp(self._rtc.read_time())
         except (ValueError, OSError, OverflowError):
+            # An absent RTC or an unset clock (all zeroes) is not fatal.
             rtc_time = None
 
         try:
@@ -121,6 +134,7 @@ class SystemStats:
             logger.debug("swap usage unavailable", exc_info=True)
             swap_percent = None
 
+        # Share the sample with the status bar so both screen paths agree.
         temperature = self._cpu_temperature(psutil)
         self._cpu_snapshot = (cpu_percent, temperature)
         self._cpu_snapshot_at = time.monotonic()
@@ -184,7 +198,10 @@ class SystemStats:
         return self._cpu_snapshot
 
     def _throttle_state(self) -> str:
-        """Summarise ``vcgencmd get_throttled`` flags (cached)."""
+        """Summarise ``vcgencmd get_throttled`` flags (cached).
+
+        Falls back to ``"N/A"`` when vcgencmd is absent (non-Pi hardware).
+        """
 
         now = time.monotonic()
         if (
@@ -206,6 +223,8 @@ class SystemStats:
 
     @staticmethod
     def _format_throttle(flags: int) -> str:
+        # Low nibble = currently active conditions.  The high nibble
+        # (0xF0000) means "has occurred since boot", shown as "!".
         labels = []
         if flags & 0x1:
             labels.append("UV")
@@ -223,6 +242,8 @@ class SystemStats:
 
     @staticmethod
     def _cpu_temperature(psutil) -> float | None:
+        """Return the CPU/SoC temperature in Celsius, if the OS exposes it."""
+
         sensors = getattr(psutil, "sensors_temperatures", None)
         if sensors is None:
             return None
@@ -234,6 +255,8 @@ class SystemStats:
 
         if not isinstance(temperatures, dict) or not temperatures:
             return None
+        # Prefer the known SoC sensor names; on other platforms fall back to
+        # the first sensor that reports any reading.
         for name in ("cpu_thermal", "soc_thermal", "coretemp"):
             entries = temperatures.get(name)
             if entries:
@@ -243,8 +266,31 @@ class SystemStats:
                 return entries[0].current
         return None
 
-    @staticmethod
-    def _cpu_frequency(psutil) -> int | None:
+    def _cpu_frequency(self, psutil) -> int | None:
+        """Return the current ARM clock in MHz.
+
+        The kernel's ``scaling_cur_freq`` (what ``psutil.cpu_freq`` reads)
+        reports the policy's maximum on this Pi even when the firmware has
+        scaled the cores down.  ``vcgencmd measure_clock arm`` reports the
+        actual clock, so it is preferred when available.
+        """
+
+        now = time.monotonic()
+        if (
+            self._frequency is not None
+            and now - self._frequency_at < self._FREQUENCY_CACHE_SECONDS
+        ):
+            return self._frequency
+
+        output = self._run(["vcgencmd", "measure_clock", "arm"])
+        match = re.search(r"frequency\(\d+\)=(\d+)", output or "")
+        if match:
+            frequency = round(int(match.group(1)) / 1_000_000)
+            if frequency > 0:
+                self._frequency = frequency
+                self._frequency_at = now
+                return frequency
+
         reader = getattr(psutil, "cpu_freq", None)
         if reader is None:
             return None
@@ -256,10 +302,15 @@ class SystemStats:
         current = getattr(frequency, "current", None)
         if not current:
             return None
-        return round(current)
+        result = round(current)
+        self._frequency = result
+        self._frequency_at = now
+        return result
 
     @staticmethod
     def _uptime(psutil) -> float | None:
+        """Return seconds since boot, or ``None`` when unavailable."""
+
         reader = getattr(psutil, "boot_time", None)
         if reader is None:
             return None
@@ -271,6 +322,10 @@ class SystemStats:
 
     @staticmethod
     def _load_average(psutil) -> tuple[float, float, float] | None:
+        """Return the 1/5/15-minute load averages, or ``None``."""
+
+        # psutil may lack getloadavg on some platforms; os.getloadavg needs
+        # a /proc-like source and can raise on others.
         reader = getattr(psutil, "getloadavg", None) or getattr(
             os, "getloadavg", None
         )
@@ -288,6 +343,12 @@ class SystemStats:
     # Power
     # ------------------------------------------------------------------
     def power_report(self) -> dict[str, object]:
+        """Return battery, bus voltage, current and power measurements.
+
+        Each read is best effort, so one missing sensor only blanks its own
+        label instead of hiding the rest of the power screen.
+        """
+
         battery_voltage = self._safe(
             lambda: round(self._battery.get_bat(), 2), "battery voltage"
         )
@@ -333,6 +394,8 @@ class SystemStats:
 
     @staticmethod
     def _safe(call: Callable[[], Any], label: str) -> Any:
+        """Run a sensor accessor, logging and returning ``None`` on failure."""
+
         try:
             return call()
         except Exception:
@@ -343,16 +406,25 @@ class SystemStats:
     # Network
     # ------------------------------------------------------------------
     def network_report(self) -> dict[str, object]:
+        """Return Wi-Fi details plus a background internet state.
+
+        The static Wi-Fi data is cached as a dict; the internet probe is
+        appended on every call but itself runs asynchronously.
+        """
+
         now = time.monotonic()
         if (
             self._network_cache is not None
             and now - self._network_cached_at < self._NETWORK_CACHE_SECONDS
         ):
+            # Copy before adding the internet key so the cache stays intact.
             report = dict(self._network_cache)
         else:
             try:
                 report = self._collect_network_report()
             except Exception:
+                # Keep the full key shape so the renderer never has to cope
+                # with a partial report.
                 logger.exception("network report failed")
                 report = {
                     "Interface {}": None,
@@ -376,6 +448,8 @@ class SystemStats:
         return result
 
     def _collect_network_report(self) -> dict[str, object]:
+        """Gather one Wi-Fi sample from the first tool that answers."""
+
         interface, essid, frequency, quality, level = self._wireless_info()
         if interface is None:
             interface = self._preferred_interface()
@@ -405,9 +479,12 @@ class SystemStats:
         elapsed = now - self._net_counters_at
         self._net_counters = counters
         self._net_counters_at = now
+        # The first sample has no baseline, so there is no rate to report.
         if previous is None or elapsed <= 0:
             return None
 
+        # Counters may reset when an interface reconnects; clamp instead of
+        # rendering a negative rate.
         receive = (
             max(0, counters.bytes_recv - previous.bytes_recv)
             / elapsed
@@ -458,6 +535,8 @@ class SystemStats:
 
     @staticmethod
     def _parse_iw_link(text: str | None) -> dict[str, str | None]:
+        """Parse ``iw dev <if> link`` output into display-ready values."""
+
         if not text:
             return {}
 
@@ -488,6 +567,8 @@ class SystemStats:
 
     @staticmethod
     def _parse_iwconfig(text: str | None) -> dict[str, str | None]:
+        """Parse legacy ``iwconfig`` output into the same keys as iw."""
+
         if not text:
             return {}
 
@@ -514,6 +595,8 @@ class SystemStats:
         return result
 
     def _interface_from_iw_dev(self) -> str | None:
+        """Return the first interface named by ``iw dev``."""
+
         text = self._run(["iw", "dev"])
         if not text:
             return None
@@ -522,6 +605,8 @@ class SystemStats:
 
     @staticmethod
     def _interface_from_proc_wireless() -> str | None:
+        """Parse the first interface name from ``/proc/net/wireless``."""
+
         try:
             with open("/proc/net/wireless", encoding="utf-8") as handle:
                 lines = handle.readlines()
@@ -534,6 +619,8 @@ class SystemStats:
         return None
 
     def _interface_from_ifconfig(self) -> str | None:
+        """Pick a plausible interface from legacy ``ifconfig`` output."""
+
         text = self._run(["ifconfig"])
         if not text:
             return None
@@ -544,6 +631,7 @@ class SystemStats:
             )
             if name != "lo"
         ]
+        # Prefer wireless, then wired; the monitor mostly reports Wi-Fi.
         for name in interfaces:
             if name.startswith(("wlan", "wlp", "wl")):
                 return name
@@ -554,6 +642,8 @@ class SystemStats:
 
     @staticmethod
     def _preferred_interface() -> str | None:
+        """Choose the most likely useful interface via psutil."""
+
         try:
             import psutil
 
@@ -566,6 +656,8 @@ class SystemStats:
         except Exception:
             stats = {}
 
+        # Sort key: wireless before wired before other, then prefer an
+        # interface that is up, and finally use the name for determinism.
         def score(name: str) -> tuple[int, int, str]:
             if name.startswith(("wlan", "wlp", "wl")):
                 group = 0
@@ -583,6 +675,8 @@ class SystemStats:
         return min(candidates, key=score) if candidates else None
 
     def _ip_address(self, interface: str | None) -> str | None:
+        """Return a routable IPv4 address, ignoring loopback/unassigned."""
+
         addresses: dict[str, list] = {}
         try:
             import psutil
@@ -622,6 +716,8 @@ class SystemStats:
 
     @staticmethod
     def _mac_address(interface: str | None) -> str | None:
+        """Return the interface MAC in upper case, or ``None``."""
+
         if not interface:
             return None
         try:
@@ -630,6 +726,7 @@ class SystemStats:
             addresses = psutil.net_if_addrs().get(interface, [])
         except Exception:
             return None
+        # The all-zero address means the interface has no hardware address.
         for address in addresses:
             value = address.address or ""
             if (
@@ -640,6 +737,13 @@ class SystemStats:
         return None
 
     def _internet_state(self) -> str:
+        """Return cached ``connected``/``offline``/``checking`` state.
+
+        A probe is started at most once per cache window and never while a
+        previous one is still running, so the render loop only observes the
+        latest result.
+        """
+
         now = time.monotonic()
         due = (
             self._internet_connected is None
@@ -649,6 +753,7 @@ class SystemStats:
             self._internet_probe is None
             or not self._internet_probe.is_alive()
         ):
+            # Daemon thread: a hung probe must not delay process exit.
             self._internet_checked_at = now
             self._internet_probe = threading.Thread(
                 target=self._probe_internet,
@@ -662,6 +767,8 @@ class SystemStats:
         return "connected" if self._internet_connected else "offline"
 
     def _probe_internet(self) -> None:
+        """Background worker; stores the result read by ``_internet_state``."""
+
         try:
             connected, _ = self._network.refresh_internet_connection_state()
             self._internet_connected = bool(connected)
@@ -673,6 +780,7 @@ class SystemStats:
     def _run(command: list[str]) -> str | None:
         """Run a probe command and return stdout, or ``None`` when absent."""
 
+        # A two-second cap keeps a wedged tool from stalling the screen.
         try:
             completed = subprocess.run(
                 command, capture_output=True, check=False, timeout=2

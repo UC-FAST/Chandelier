@@ -15,7 +15,13 @@ ActionCallback = Callable[[Action, Phase], None]
 
 
 class GpioInputPanel:
-    """Binds the physical controls to :class:`Action` events."""
+    """Binds the physical controls to :class:`Action` events.
+
+    Inputs use gpiozero's default active-high polarity, and every callback
+    runs on gpiozero's own thread.  Handlers must therefore be short and
+    thread-safe; the controller owns any shared state and wakes its render
+    loop itself.
+    """
 
     def __init__(self, pins: PinConfig, on_action: ActionCallback):
         import gpiozero
@@ -23,6 +29,8 @@ class GpioInputPanel:
         self._on_action = on_action
         self._devices: list = []
 
+        # Face buttons only need the press edge; direction keys also report
+        # the release edge so the UI can map distinct press/release actions.
         self._bind_press(Action.SHUTTER, pins.shutter)
         self._bind_press(Action.SQUARE, pins.square)
         self._bind_press(Action.CROSS, pins.cross)
@@ -36,6 +44,8 @@ class GpioInputPanel:
 
         self._bind_press(Action.ROTARY_SELECT, pins.rotary_encoder_1s)
 
+        # gpiozero decodes the quadrature pair; rotations are reported as
+        # PRESS because the event model has no dedicated rotation phase.
         self._rotary = gpiozero.RotaryEncoder(
             pins.rotary_encoder_1a, pins.rotary_encoder_1b
         )
@@ -48,6 +58,7 @@ class GpioInputPanel:
         self._devices.append(self._rotary)
 
     def _bind_press(self, action: Action, pin: int) -> None:
+        """Bind a button whose release edge is not interesting."""
         import gpiozero
 
         device = gpiozero.DigitalInputDevice(pin=pin)
@@ -65,7 +76,10 @@ class GpioInputPanel:
         self._devices.append(device)
 
     def close(self) -> None:
+        """Close every GPIO device, ignoring errors during teardown."""
         for device in self._devices:
+            # A device may already be closed by the OS or a failed setup;
+            # shutdown should still release the remaining lines.
             try:
                 device.close()
             except Exception:

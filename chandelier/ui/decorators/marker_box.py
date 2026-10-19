@@ -42,6 +42,13 @@ class _Sample:
 
 
 class MarkerBox:
+    """Draw smoothed boxes, labels and edge arrows for tracked sources.
+
+    Track ids are assigned by the caller (usually a DOA detector); the
+    colour palette is BGR and ``track_id % len(palette)`` picks an entry.
+    All state lives in memory and is pruned lazily on :meth:`decorate`.
+    """
+
     def __init__(
         self,
         width: int = 320,
@@ -70,6 +77,8 @@ class MarkerBox:
     def _build_palette(
         color: tuple[int, int, int] | None,
     ) -> tuple[tuple[int, int, int], ...]:
+        """Put the configured colour first so track 0 always uses it."""
+
         if color is None:
             return _PALETTE
         return (color,) + tuple(item for item in _PALETTE if item != color)
@@ -95,12 +104,21 @@ class MarkerBox:
         text: str = "",
         timestamp: float | None = None,
     ) -> None:
+        """Record one detection for ``track_id``.
+
+        ``coordinate=None`` is a no-op: the source was not detected this
+        cycle, and its samples should age out via the TTL rather than be
+        cleared immediately.
+        """
+
         if coordinate is None:
             return
         # Keep the raw position: the drawing code needs to know whether the
         # source is still on screen so it can render an edge arrow instead.
         x = int(coordinate[0])
         y = int(coordinate[1])
+        # ``maxlen`` bounds memory per track; the deque slides automatically
+        # and is what the median filter later reads.
         samples = self._tracks.setdefault(
             track_id, deque(maxlen=self._cache)
         )
@@ -118,6 +136,8 @@ class MarkerBox:
         targets: Iterable[tuple[int, tuple[int, int] | None, str]],
         timestamp: float | None = None,
     ) -> None:
+        """Update several tracks with one shared timestamp."""
+
         for track_id, coordinate, text in targets:
             self.update(track_id, coordinate, text, timestamp)
 
@@ -135,6 +155,13 @@ class MarkerBox:
     def _smoothed_position(
         samples: deque[_Sample],
     ) -> tuple[int, int]:
+        """Return the per-axis median of the recent samples.
+
+        Median rather than mean: one wild detection should not drag the box
+        across the screen, and there is no need to keep the history sorted
+        between frames at this small window size.
+        """
+
         xs = sorted(sample.x for sample in samples)
         ys = sorted(sample.y for sample in samples)
         return xs[len(xs) // 2], ys[len(ys) // 2]
@@ -154,6 +181,8 @@ class MarkerBox:
             (sample.x, sample.y)
             for sample in list(samples)[-self._trail :]
         ]
+        # Same black-halo trick as the box: three-pixel dark stroke under a
+        # one-pixel coloured line so the trail reads on any background.
         for start, end in zip(points, points[1:]):
             cv2.line(frame, start, end, (0, 0, 0), 3, cv2.LINE_AA)
             cv2.line(frame, start, end, color, 1, cv2.LINE_AA)
@@ -161,6 +190,8 @@ class MarkerBox:
     def _draw_label(
         self, frame, center_x: int, center_y: int, text: str
     ) -> None:
+        """Draw a black plate with white text near a marker centre."""
+
         if not text:
             return
 
@@ -243,6 +274,8 @@ class MarkerBox:
             factors.append((bottom - center_y) / dy)
         elif dy < 0:
             factors.append((top - center_y) / dy)
+        # Each factor is the distance (in ray lengths) to one border; the
+        # smallest positive one is the first edge the ray actually crosses.
         positive = [factor for factor in factors if factor > 0]
         if not positive:
             return center_x, center_y
@@ -265,12 +298,16 @@ class MarkerBox:
         unit_x, unit_y = dx / norm, dy / norm
 
         tip_x, tip_y = self._edge_tip(x, y, margin=3)
+        # Arrow length follows the marker size, but stays short enough to
+        # fit even on the smallest preview resolutions.
         length = min(
             max(12, min(self._box_size)),
             max(6, min(self._width, self._height) // 3),
         )
         base_x = tip_x - unit_x * length
         base_y = tip_y - unit_y * length
+        # Triangle base half-width; the perpendicular is the unit vector
+        # rotated by 90 degrees in screen space.
         half = max(3.0, length * 0.45)
         perp_x, perp_y = -unit_y, unit_x
 
@@ -295,6 +332,8 @@ class MarkerBox:
     def _draw_track(
         self, frame, track_id: int, samples: deque[_Sample]
     ) -> None:
+        """Draw one track as an on-screen box or an off-screen arrow."""
+
         center_x, center_y = self._smoothed_position(samples)
         color = self._track_color(track_id)
 
@@ -304,6 +343,8 @@ class MarkerBox:
             )
             return
 
+        # Clamp the box to the frame; near an edge it visually shrinks
+        # rather than being drawn partly outside the image buffer.
         half_width = self._box_size[0] // 2
         half_height = self._box_size[1] // 2
         x1 = max(0, min(self._width - 1, center_x - half_width))

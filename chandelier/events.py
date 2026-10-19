@@ -8,6 +8,8 @@ from typing import Any
 
 
 class Action(str, Enum):
+    """Physical input events reported by the GPIO panel and web preview."""
+
     CENTER = "center"
     UP = "up"
     DOWN = "down"
@@ -23,6 +25,8 @@ class Action(str, Enum):
 
 
 class Phase(str, Enum):
+    """Whether a button event is a press or a release edge."""
+
     PRESS = "press"
     RELEASE = "release"
 
@@ -68,6 +72,8 @@ ACTION_SPECS: dict[tuple[Action, Phase], ActionSpec] = {
 def resolve_action(
     action: Action, phase: Phase = Phase.PRESS
 ) -> ActionSpec | None:
+    """Return the dispatch spec for an event, or ``None`` when unbound."""
+
     return ACTION_SPECS.get((action, phase))
 
 

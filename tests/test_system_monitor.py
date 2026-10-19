@@ -6,8 +6,17 @@ import numpy as np
 import pytest
 
 from chandelier.config import load_config
+from chandelier.ui.dashboard_render import DashboardRenderer
 from chandelier.ui.system_monitor_end import SystemMonitor
+from chandelier.ui.text_render import get_renderer
+from chandelier.ui.themes import THEMES, get_theme, set_active_theme
 from tests.fakes import FakeStats
+
+
+@pytest.fixture(autouse=True)
+def _restore_default_theme():
+    yield
+    set_active_theme("dark_pro")
 
 
 def _monitor(stats=None):
@@ -32,10 +41,23 @@ def test_monitor_renders_and_navigates_pages():
     monitor.down_press_action()
     assert monitor.current_page == 3
 
-    monitor.up_release_action()
-    monitor.up_release_action()
-    monitor.up_release_action()
+    monitor.up_press_action()
+    monitor.up_press_action()
+    monitor.up_press_action()
     assert monitor.current_page == 0
+
+
+def test_monitor_web_up_press_pages_back_from_last_page():
+    from chandelier.events import Action, Phase
+
+    monitor = _monitor()
+    for _ in range(3):
+        monitor.down_press_action()
+    assert monitor.current_page == 3
+
+    # The web UI sends only PRESS events; up must still page back.
+    assert monitor.handle_action(Action.UP, Phase.PRESS)
+    assert monitor.current_page == 2
 
 
 def test_monitor_cross_returns_to_camera():
@@ -174,9 +196,9 @@ def test_monitor_rows_parse_label_value_and_units():
 def test_monitor_follows_menu_theme():
     from chandelier.ui.themes import set_active_theme
 
-    set_active_theme("xp_luna")
+    set_active_theme("ubuntu")
     monitor = _monitor()
-    assert monitor._theme.id == "xp_luna"
+    assert monitor._theme.id == "ubuntu"
     assert monitor._compose_frame().any()
 
 
@@ -198,3 +220,48 @@ def test_monitor_value_styling_uses_theme_colors():
     assert monitor._value_color("Internet {}", "connected") == theme.success
     assert monitor._bar_percent("BAT {}v {}%", "4.0v 42%") == 42.0
     assert monitor._bar_percent("System Time {}", "12:00") is None
+
+
+@pytest.mark.parametrize("theme_id", tuple(THEMES))
+def test_monitor_renders_in_every_menu_theme(theme_id):
+    set_active_theme(theme_id)
+    monitor = _monitor()
+    frame = monitor._compose_frame()
+    assert frame.shape == (240, 320, 3)
+    assert frame.any()
+
+
+def test_monitor_renders_dense_page():
+    class DenseStats:
+        def hardware_report(self):
+            return {
+                f"Metric {index} {{}}": f"{index * 8}%"
+                for index in range(12)
+            }
+
+        def power_report(self):
+            return {}
+
+        def network_report(self):
+            return {}
+
+    monitor = SystemMonitor(DenseStats(), load_config())
+    frame = monitor._compose_frame()
+    assert frame.shape == (240, 320, 3)
+    assert frame.any()
+
+
+def test_dashboard_renderer_handles_empty_rows():
+    set_active_theme("dark_pro")
+    renderer = DashboardRenderer(
+        get_theme("dark_pro"), 320, 240, get_renderer()
+    )
+    frame = renderer.render(
+        title="SYSTEM",
+        page=0,
+        pages=1,
+        rows=[],
+        hints="UP/DOWN PAGE",
+    )
+    assert frame.shape == (240, 320, 3)
+    assert frame.any()

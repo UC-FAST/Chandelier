@@ -45,6 +45,8 @@ def _unit_direction(azimuth_rad: float, elevation_rad: float):
     """
 
     transverse = math.cos(elevation_rad)
+    # x is negated so azimuth 0 appears on the left; y points up and z
+    # points forward along the optical axis.
     return (
         -transverse * math.cos(azimuth_rad),
         transverse * math.sin(azimuth_rad),
@@ -90,8 +92,11 @@ def aziel_to_screen_spherical(
         raise ValueError("horizontal FOV must be in (0, 180) degrees")
 
     azi = float(azi) % 360.0
+    # The estimator only reports the front hemisphere; clamp to it before
+    # projecting so a stray negative elevation cannot flip the marker.
     ele = min(90.0, max(0.0, float(ele) + float(elevation_offset)))
 
+    # Pinhole focal length in pixels from the horizontal field of view.
     focal = (width / 2.0) / math.tan(math.radians(float(fov)) / 2.0)
     azimuth_rad = math.radians((azi - float(azimuth_offset)) % 360.0)
     radians_ele = math.radians(ele)
@@ -100,6 +105,8 @@ def aziel_to_screen_spherical(
     if float(source_distance) > 0.0:
         ux, uy, uz = _unit_direction(azimuth_rad, radians_ele)
         distance = float(source_distance)
+        # Place the source on the array's ray at ``distance`` from the
+        # camera: solve |offset + t * u|^2 = distance^2 for t > 0.
         linear = 2.0 * (
             offset_x * ux + offset_y * uy + offset_z * uz
         )
@@ -111,6 +118,7 @@ def aziel_to_screen_spherical(
         )
         discriminant = linear * linear - 4.0 * constant
         if discriminant >= 0.0:
+            # The positive root is the intersection in front of the array.
             travel = (-linear + math.sqrt(discriminant)) / 2.0
             if travel > 0.0:
                 # Source position relative to the camera.
@@ -118,11 +126,16 @@ def aziel_to_screen_spherical(
                 sy = offset_y + travel * uy
                 sz = offset_z + travel * uz
                 if sz > 1e-9:
+                    # Rectilinear projection; image rows grow downwards,
+                    # hence the minus on y.
                     x = width / 2.0 + focal * sx / sz
                     y = height / 2.0 - focal * sy / sz
                     return _cap_offscreen(x, y, width, height)
 
     sin_ele = math.sin(radians_ele)
+    # Direction-only projection: the radius is focal / tan(elevation).
+    # At the horizon this tends to infinity, so cap it at a finite radius;
+    # the 1e-12 guard avoids a division by zero at elevation 0.
     if sin_ele <= 1e-12:
         radius = MAX_OFFSCREEN_RADIUS
     else:
@@ -131,6 +144,7 @@ def aziel_to_screen_spherical(
             MAX_OFFSCREEN_RADIUS,
         )
 
+    # Mirrored axes match the device convention documented above.
     x = width / 2.0 - radius * math.cos(azimuth_rad)
     y = height / 2.0 - radius * math.sin(azimuth_rad)
     return int(round(x)), int(round(y))
@@ -172,6 +186,8 @@ def apply_screen_gain(
 
     center_x = width / 2.0
     center_y = height / 2.0
+    # Per-axis expansion about the centre; the axes are independent so
+    # lens/geometry calibration does not have to be isotropic.
     corrected_x = x + float(gain_x) * (x - center_x)
     corrected_y = y + float(gain_y) * (y - center_y)
     return int(round(corrected_x)), int(round(corrected_y))

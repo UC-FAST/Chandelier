@@ -22,6 +22,8 @@ def exception_recorder(
     """
 
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        # Keep the original name and docstring on the wrapper so log
+        # records and tracebacks point at the decorated function.
         @wraps(func)
         def wrapper(*args: Any, **kwargs: Any) -> Any:
             try:
@@ -35,6 +37,7 @@ def exception_recorder(
                     f"{func.__code__.co_firstlineno}",
                     f"exception: {type(exc).__name__}: {exc}",
                 ]
+                # Opt-in: arguments may be large or contain sensitive data.
                 if include_args:
                     if args:
                         lines.append(f"positional args: {args}")
@@ -48,6 +51,8 @@ def exception_recorder(
                 if logger is not None:
                     logger.error(message)
                 else:
+                    # Fall back to a file, then to stdout if even that
+                    # fails; never lose the record silently.
                     try:
                         with open(path, "a", encoding="utf-8") as handle:
                             handle.write(message)
@@ -57,6 +62,8 @@ def exception_recorder(
 
                 if log_to_console:
                     print(message)
+                # Re-raise with the original traceback; this decorator only
+                # observes the failure.
                 raise
 
         return wrapper

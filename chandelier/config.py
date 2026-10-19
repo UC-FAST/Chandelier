@@ -42,6 +42,8 @@ class MenuConfigError(ValueError):
 
 @dataclass(frozen=True)
 class PinConfig:
+    """BCM pin numbers for buttons, encoder, shutter and display control."""
+
     right: int
     up: int
     left: int
@@ -61,6 +63,8 @@ class PinConfig:
 
 @dataclass(frozen=True)
 class CameraConfig:
+    """Camera capture paths, bitrate, tuning file and preview size."""
+
     path: Path
     video_path: Path
     video_bitrate: int
@@ -71,23 +75,31 @@ class CameraConfig:
 
 @dataclass(frozen=True)
 class ScreenConfig:
+    """Display dimensions in pixels."""
+
     width: int
     height: int
 
 
 @dataclass(frozen=True)
 class LedConfig:
+    """GPIO pins driving the green and blue status LEDs."""
+
     green: int
     blue: int
 
 
 @dataclass(frozen=True)
 class I2CBusConfig:
+    """I2C bus number for a sensor."""
+
     bus: int
 
 
 @dataclass(frozen=True)
 class Ina230Config:
+    """INA230 bus plus shunt and expected-current calibration values."""
+
     bus: int
     shunt_resistance: float
     maximum_expected_current: float
@@ -95,6 +107,8 @@ class Ina230Config:
 
 @dataclass(frozen=True)
 class SensorConfig:
+    """I2C configuration for the RTC, power monitor and fuel gauge."""
+
     bq32002: I2CBusConfig
     ina230: Ina230Config
     max17048: I2CBusConfig
@@ -102,6 +116,13 @@ class SensorConfig:
 
 @dataclass(frozen=True)
 class LocalizerConfig:
+    """Sound-localiser input and marker-mapping parameters.
+
+    Defaults target the six-channel microphone array; the ``marker_*``
+    fields project a detected direction onto the camera view.  Most values
+    also have menu equivalents in ``menus.json``.
+    """
+
     device: int | None = 0
     rate: int = 16000
     chunk: int = 1600
@@ -143,7 +164,21 @@ class MarkerConfig:
 
 
 @dataclass(frozen=True)
+class PreviewConfig:
+    """Web preview server settings.
+
+    ``auth_file`` is an optional JSON file with ``username`` and ``password``
+    keys.  It is deliberately separate from ``config.json`` so credentials do
+    not have to be committed.
+    """
+
+    auth_file: Path
+
+
+@dataclass(frozen=True)
 class AppConfig:
+    """Fully parsed ``config.json``; every path is already absolute."""
+
     pin: PinConfig
     camera: CameraConfig
     screen: ScreenConfig
@@ -151,6 +186,7 @@ class AppConfig:
     sensors: SensorConfig
     localizer: LocalizerConfig
     marker: MarkerConfig
+    preview: PreviewConfig
     debug_level: int
     internet_test_url: str
     ntp_server: str
@@ -162,6 +198,12 @@ class AppConfig:
 
 
 def resolve_path(value: str | os.PathLike[str], base: Path = PROJECT_ROOT) -> Path:
+    """Resolve a config path, joining relative values to ``base``.
+
+    Resolving against the project root rather than the process working
+    directory keeps behaviour identical for systemd and manual launches.
+    """
+
     path = Path(value)
     if path.is_absolute():
         return path.resolve()
@@ -169,6 +211,8 @@ def resolve_path(value: str | os.PathLike[str], base: Path = PROJECT_ROOT) -> Pa
 
 
 def _as_int(mapping: dict[str, Any], key: str, where: str) -> int:
+    """Read ``key`` as an int, adding the section name to the error."""
+
     try:
         return int(mapping[key])
     except KeyError as exc:
@@ -178,6 +222,8 @@ def _as_int(mapping: dict[str, Any], key: str, where: str) -> int:
 
 
 def _as_float(mapping: dict[str, Any], key: str, where: str) -> float:
+    """Read ``key`` as a float, adding the section name to the error."""
+
     try:
         return float(mapping[key])
     except KeyError as exc:
@@ -187,6 +233,12 @@ def _as_float(mapping: dict[str, Any], key: str, where: str) -> float:
 
 
 def _reject_legacy_pin_keys(pin: dict[str, Any]) -> None:
+    """Fail loudly on the old camelCase encoder keys.
+
+    Silently ignoring them would leave the encoder pins at zero and fail
+    later in a less obvious place, so demand an explicit rename instead.
+    """
+
     legacy = {"rotaryEncoder1A", "rotaryEncoder1B", "rotaryEncoder1S"}
     found = legacy.intersection(pin)
     if found:
@@ -198,6 +250,12 @@ def _reject_legacy_pin_keys(pin: dict[str, Any]) -> None:
 
 
 def _parse_config(raw: dict[str, Any]) -> AppConfig:
+    """Validate a raw ``config.json`` dict and build an :class:`AppConfig`.
+
+    Raises :class:`ConfigError` with a human-readable message on bad types,
+    missing sections or out-of-range values.
+    """
+
     try:
         pin_raw = raw["pin"]
         camera_raw = raw["camera"]
@@ -226,6 +284,8 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
         bl=_as_int(pin_raw, "bl", "pin"),
     )
 
+    # Optional keys fall back to the layout shipped with the project; the
+    # path defaults are relative and resolved against PROJECT_ROOT.
     tuning = camera_raw.get("tuning_file")
     camera = CameraConfig(
         path=resolve_path(camera_raw.get("path", "pict")),
@@ -262,11 +322,13 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
     localizer_raw = raw.get("localizer", {})
     silero_dir = localizer_raw.get("silero_model_dir")
     marker_fov = float(localizer_raw.get("marker_fov", 83.0))
+    # 0 or 180 degrees would make the marker projection singular.
     if not 0.0 < marker_fov < 180.0:
         raise ConfigError(
             "localizer.marker_fov must be between 0 and 180 degrees, "
             f"got {localizer_raw.get('marker_fov')!r}"
         )
+    # Wrap the azimuth so menu edits may use either -N or 360+N conventions.
     marker_azimuth_offset = float(
         localizer_raw.get("marker_azimuth_offset", 0.0)
     ) % 360.0
@@ -323,6 +385,8 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
             "marker.mode must be 'single' or 'multiple', "
             f"got {marker_raw.get('mode')!r}"
         )
+    # Marker tuning is clamped rather than rejected: menu-driven edits should
+    # never make the screen unusable, even with a stale config file.
     marker = MarkerConfig(
         mode=marker_mode,
         max_sources=max(1, min(8, int(marker_raw.get("max_sources", 3)))),
@@ -330,6 +394,15 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
         smoothing=max(1, int(marker_raw.get("smoothing", 5))),
         trail=max(0, int(marker_raw.get("trail", 3))),
         size=max(4, int(marker_raw.get("size", 24))),
+    )
+
+    preview_raw = raw.get("preview", {})
+    if not isinstance(preview_raw, dict):
+        raise ConfigError("'preview' must be an object")
+    preview = PreviewConfig(
+        auth_file=resolve_path(
+            preview_raw.get("auth_file", "config/preview_auth.json")
+        )
     )
 
     return AppConfig(
@@ -340,6 +413,7 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
         sensors=sensors,
         localizer=localizer,
         marker=marker,
+        preview=preview,
         debug_level=int(raw.get("debug_level", 10)),
         internet_test_url=str(
             raw.get(
@@ -354,6 +428,13 @@ def _parse_config(raw: dict[str, Any]) -> AppConfig:
 
 @lru_cache(maxsize=16)
 def _load_config_cached(path: str, _mtime_ns: int) -> AppConfig:
+    """Parse once per (path, mtime) pair.
+
+    ``mtime_ns`` is part of the cache key even though it is unused below:
+    rewriting the file gives a new key, so the cache invalidates without
+    callers having to remember to clear it.
+    """
+
     with open(path, encoding="utf-8") as handle:
         raw = json.load(handle)
     if not isinstance(raw, dict):
@@ -362,7 +443,11 @@ def _load_config_cached(path: str, _mtime_ns: int) -> AppConfig:
 
 
 def load_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
-    """Load ``config.json``.  Results are cached per resolved path+mtime."""
+    """Load ``config.json``.  Results are cached per resolved path+mtime.
+
+    Relative ``path`` values resolve against the project root; the default
+    is ``config/config.json`` next to the ``chandelier`` package.
+    """
 
     resolved = resolve_path(path) if path is not None else DEFAULT_CONFIG_PATH
     try:
@@ -373,6 +458,8 @@ def load_config(path: str | os.PathLike[str] | None = None) -> AppConfig:
 
 
 def clear_config_cache() -> None:
+    """Drop cached configs, e.g. after a test rewrites the same file."""
+
     _load_config_cached.cache_clear()
 
 
@@ -415,6 +502,7 @@ def _option_ids(section: dict[str, Any]) -> set[str]:
 
 
 def _is_number(value: Any) -> bool:
+    # bool is an int subclass, but JSON ``true`` is not a menu number.
     return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
@@ -431,6 +519,8 @@ def validate_menu_config(tree: dict[str, Any]) -> list[str]:
     if not isinstance(tree, dict):
         return ["menu configuration must be a JSON object"]
 
+    # Camera and gallery are the minimum usable UI; the other end trees are
+    # optional so a reduced menu file still validates.
     required_groups = {EndId.CAMERA.value, EndId.GALLERY.value}
     missing = required_groups.difference(tree)
     if missing:
@@ -468,6 +558,7 @@ def validate_menu_config(tree: dict[str, Any]) -> list[str]:
                 if isinstance(option, dict)
                 and isinstance(option.get("id"), str)
             ]
+            # Deduplicate so one repeated id produces one error, not N.
             duplicates = sorted({item for item in ids if ids.count(item) > 1})
             if duplicates:
                 errors.append(
@@ -558,6 +649,8 @@ def validate_menu_config(tree: dict[str, Any]) -> list[str]:
                         f"{where} has unknown receiver '{receiver}'"
                     )
 
+                # Menu targets name a section in the same end tree; irq and
+                # msg targets name top-level end ids instead.
                 if item_type == MenuItemType.MENU.value:
                     target = option.get("value")
                     if target not in sections:
@@ -580,6 +673,8 @@ def validate_menu_config(tree: dict[str, Any]) -> list[str]:
                             f"{where} has unknown receiver '{receiver}'"
                         )
 
+                # Dependencies may only reference ids declared in this same
+                # section, which is what the menu lookups assume.
                 for dependency_key in (
                     "set_disable",
                     "set_enable",
@@ -664,6 +759,8 @@ def save_menu_config(tree: dict[str, Any], path: str | os.PathLike[str]) -> None
 
     resolved = resolve_path(path)
     resolved.parent.mkdir(parents=True, exist_ok=True)
+    # Write a sibling temp file so os.replace is atomic on the same
+    # filesystem; a crash cannot leave a truncated menus.json behind.
     fd, temp_name = tempfile.mkstemp(
         prefix=f".{resolved.name}.", suffix=".tmp", dir=resolved.parent
     )

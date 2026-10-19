@@ -100,6 +100,7 @@ class MenuOptionId(str, Enum):
     SYSTEM = "system"
     LANGUAGE = "language"
     WEB_SERVER = "web_server"
+    RESTART_SERVICE = "restart_service"
     REBOOT = "reboot"
 
     # Sound localizer

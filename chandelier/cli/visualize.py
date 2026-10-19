@@ -17,6 +17,8 @@ MICS = mic_array_positions()
 
 
 class PlotlySphere:
+    """Interactive Plotly figure showing DOAs on a unit sphere."""
+
     def __init__(self, radius: float = 1.0):
         self.radius = radius
         self._fig = go.Figure()
@@ -25,9 +27,13 @@ class PlotlySphere:
         self._create_sphere()
 
     def __call__(self, filename: str = "DOAS.html", auto_open: bool = True):
+        """Write the accumulated figure to ``filename`` as standalone HTML."""
+
         self._fig.write_html(filename, auto_open=auto_open)
 
     def _create_sphere(self) -> None:
+        """Draw the translucent sphere, compass arrows, and mic marks."""
+
         phi, theta = np.mgrid[0.0 : np.pi : 100j, 0.0 : 2.0 * np.pi : 100j]
         x = self.radius * np.sin(phi) * np.cos(theta)
         y = self.radius * np.sin(phi) * np.sin(theta)
@@ -129,9 +135,18 @@ class PlotlySphere:
         color_marker: str = MARKER_COLOR,
         color_proj: str = MARKER_PROJ_COLOR,
     ) -> None:
+        """Add one marker trace per DOA row, optionally with projections.
+
+        ``doas`` holds ``(azimuth, elevation)`` pairs in degrees; a 1-D array
+        is treated as a single row.  ``show_xyz_proj`` may be a bool to draw
+        all three plane projections or a three-element mask choosing them.
+        """
+
         if doas.ndim == 1:
             doas = np.expand_dims(doas, 0)
 
+        # Divide by the project's truncated degrees-per-radian constant
+        # (180/pi) to convert the reported angles into radians.
         z = np.sin(doas[:, 1] / 57.293)
         radius = np.cos(doas[:, 1] / 57.293)
         x = np.cos(doas[:, 0] / 57.293) * radius
@@ -139,6 +154,8 @@ class PlotlySphere:
         points = np.stack((x, y, z), axis=-1)
 
         scatter_list = [[points[:, 0], points[:, 1], points[:, 2], color_marker]]
+        # Drop one coordinate per projection and park the result on a wall
+        # of the +/-1 box so the direction stays readable in 3-D.
         xyz_plane = [
             [points[:, 0], points[:, 1], np.zeros(len(points)) - 1, color_proj],
             [points[:, 0], np.zeros(len(points)) + 1, points[:, 2], color_proj],
@@ -169,6 +186,8 @@ class PlotlySphere:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for the DOA visualiser."""
+
     parser = argparse.ArgumentParser(description="Visualise DOA estimates")
     parser.add_argument("--wave", required=True, help="CSV file with DOAs")
     parser.add_argument("--src", type=int, required=True)
@@ -176,18 +195,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Render DOA traces from an exported CSV into a sibling HTML file.
+
+    The CSV is expected to have a header row and two columns per source
+    (azimuth then elevation), in source order.
+    """
+
     args = build_parser().parse_args(argv)
     path = Path(args.wave)
     if not path.is_file():
         raise SystemExit(f"file not found: {path}")
 
     sphere = PlotlySphere()
+    # One marker/projection colour pair per source; the palettes are sized
+    # for the four-source case this tool is normally used with.
     marker_colors = ["#00AFFF", "#FF0000", "#00FF00", "#FFD700"]
     projection_colors = ["#005FFF", "#BB00BB", "#00BB55", "#FFA500"]
 
     for index, columns in enumerate(
         [(column * 2, column * 2 + 1) for column in range(args.src)]
     ):
+        # Each source occupies an (azimuth, elevation) column pair.
         doas = np.genfromtxt(
             path,
             delimiter=",",
