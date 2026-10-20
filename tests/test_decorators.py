@@ -94,6 +94,37 @@ def test_histogram_is_confined_to_the_corner_box():
     assert tuple(frame[200, 220]) != (128, 128, 128)
 
 
+def test_histogram_bars_stay_inside_the_corner_box():
+    from chandelier.ui.decorators import corner_padding
+
+    padding = corner_padding(320, 240, corner="bottom-right")
+    # Rectangle used by decorate(): left, top, right - 1, bottom - 1.
+    left, top = padding[0], padding[1]
+    right = 320 - padding[2]
+
+    frame = np.full((240, 320, 3), 128, dtype=np.uint8)
+    # A single bright band creates a tall narrow spike; the tallest bar used
+    # to be drawn on the top border row and anti-alias one row above it.
+    frame[40:60, 40:280] = 255
+    before = frame.copy()
+
+    hist = Histogram(320, 240, padding=padding)
+    hist.decorate(frame)
+
+    # Nothing above the box or left of it may be touched.
+    assert np.array_equal(frame[:top], before[:top])
+    assert np.array_equal(frame[:, :left], before[:, :left])
+    assert np.array_equal(frame[:, right:], before[:, right:])
+
+    # The bars themselves keep a clear margin inside the border.
+    _, mask = hist._build_bars(
+        before, left, top, 320 - padding[2], 240 - padding[3]
+    )
+    assert np.count_nonzero(mask[: top + 3]) == 0
+    assert np.count_nonzero(mask[:, : left + 2]) == 0
+    assert np.count_nonzero(mask[:, 320 - padding[2] - 2 :]) == 0
+
+
 def test_histogram_scale_ignores_a_clipped_shadow_spike():
     from chandelier.ui.decorators import corner_padding
 

@@ -38,6 +38,22 @@ def test_menu_settings_are_applied():
     assert end._state.show_hist is bool(values["show_hist"])
 
 
+def test_watermark_is_applied_before_saving():
+    end, camera, tree = _make_end()
+    for section in tree.values():
+        for option in section.get("options", []):
+            if option.get("id") == "watermark":
+                option["value"] = True
+
+    end._capture_photo(0)
+
+    callback = camera.saved[-1]["watermark"]
+    assert callable(callback)
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    callback(frame)
+    assert frame.max() > 0
+
+
 def test_histogram_box_avoids_the_status_bar():
     end, _, _ = _make_end()
 
@@ -532,7 +548,7 @@ def test_sides_status_items_use_two_line_labels():
         camera.metadata["ExposureTime"]
     )
     assert labels["WB"] == "5000"
-    assert labels["ISO"] == "150"
+    assert labels["ISO"] == "160"
 
 
 def test_status_bar_fps_is_a_label_value_item():
@@ -560,6 +576,65 @@ def test_status_bar_shows_iso():
         and item.value == "1000"
         for item in items
     )
+
+
+def test_status_bar_quantizes_exposure_and_iso():
+    end, camera, _ = _make_end()
+    # Side mode exposes both values as label/value StatusItems.
+    end._state.status_position = "sides"
+
+    def values():
+        return {
+            item.label: item.value
+            for item in end._status_items()
+            if isinstance(item, StatusItem)
+        }
+
+    camera.metadata["ExposureTime"] = 31_250  # 1/32, nearest 1/30
+    camera.metadata["AnalogueGain"] = 2.0  # ISO 200
+    camera.metadata["DigitalGain"] = 1.0
+    assert values()["SH"] == "1/30"
+    assert values()["ISO"] == "200"
+
+    # Frame-to-frame auto-exposure jitter inside the deadband must not
+    # change the rendered text.
+    camera.metadata["ExposureTime"] = 32_000  # 1/31.25
+    camera.metadata["AnalogueGain"] = 2.03  # ISO 203
+    assert values()["SH"] == "1/30"
+    assert values()["ISO"] == "200"
+
+    # A real scene change still updates after the debounce interval.
+    camera.metadata["ExposureTime"] = 40_000  # 1/25
+    camera.metadata["AnalogueGain"] = 2.5  # ISO 250
+    for _ in range(5):
+        values()
+    assert values()["SH"] == "1/25"
+    assert values()["ISO"] == "250"
+
+
+def test_status_bar_ignores_alternating_exposure_readings():
+    end, camera, _ = _make_end()
+    end._state.status_position = "sides"
+
+    def values():
+        return {
+            item.label: item.value
+            for item in end._status_items()
+            if isinstance(item, StatusItem)
+        }
+
+    # HDR's short/long frames (or an AE limit cycle) can alternate between
+    # two well-separated readings on consecutive frames.  Neither one
+    # persists long enough to pass the debounce, so the text stays fixed.
+    readings = []
+    for _ in range(10):
+        for gain, exposure in ((2.0, 31_250), (2.5, 40_000)):
+            camera.metadata["AnalogueGain"] = gain
+            camera.metadata["ExposureTime"] = exposure
+            readings.append(values())
+
+    assert all(item["ISO"] == "200" for item in readings)
+    assert all(item["SH"] == "1/30" for item in readings)
 
 
 def test_iso_is_hidden_when_gain_is_unavailable():
@@ -595,3 +670,241 @@ def test_status_bar_shows_cpu_and_temperature():
         and item.value_role == "warning"
         for item in items
     )
+
+
+def test_new_camera_controls_are_applied():
+    end, camera, tree = _make_end()
+    _set_option(
+        tree, "af_mode", {"content": "Continuous AF", "value": 2}
+    )
+    _set_option(
+        tree,
+        "exposure_priority",
+        {"content": "Shutter Priority", "value": 1},
+    )
+    _set_option(
+        tree,
+        "noise_reduction",
+        {"content": "High Quality", "value": 2},
+    )
+    _set_option(
+        tree, "preview_fps", {"content": "15 fps", "value": 15}
+    )
+    _set_option(tree, "af_pause", True)
+    _set_option(tree, "isp_stats", True)
+
+    camera.calls.clear()
+    end.load_settings()
+    calls = dict(camera.calls)
+
+    assert calls["set_exposure_priority"]["priority"] == 1
+    assert calls["set_noise_reduction"]["mode"] == 2
+    assert calls["set_frame_rate"]["fps"] == 15
+    assert calls["set_af_pause"]["paused"] is True
+    assert calls["set_stats_output"]["enable"] is True
+
+
+def test_exposure_priority_is_ignored_in_manual_mode():
+    end, camera, tree = _make_end()
+    _set_option(tree, "auto_expose", False)
+    _set_option(
+        tree,
+        "exposure_priority",
+        {"content": "Shutter Priority", "value": 1},
+    )
+
+    camera.calls.clear()
+    end.load_settings()
+    names = [name for name, _ in camera.calls]
+
+    assert "set_manual_exposure" in names
+    assert "set_exposure_priority" not in names
+
+
+def test_ae_lock_wins_over_exposure_priority():
+    end, camera, tree = _make_end()
+    _set_option(
+        tree,
+        "exposure_priority",
+        {"content": "Shutter Priority", "value": 1},
+    )
+    _set_option(tree, "ae_lock", True)
+
+    camera.calls.clear()
+    end.load_settings()
+    names = [name for name, _ in camera.calls]
+
+    assert "set_exposure_priority" in names
+    assert "set_ae_lock" in names
+    assert names.index("set_ae_lock") > names.index(
+        "set_exposure_priority"
+    )
+
+
+def test_colour_temperature_overrides_awb():
+    end, camera, tree = _make_end()
+    _set_option(tree, "colour_temperature", 4000)
+
+    camera.calls.clear()
+    end.load_settings()
+    calls = dict(camera.calls)
+
+    assert calls["set_colour_temperature"]["kelvin"] == 4000
+    assert "set_awb_enable" not in calls
+
+    _set_option(tree, "colour_temperature", 0)
+    camera.calls.clear()
+    end.load_settings()
+    assert "set_awb_enable" in dict(camera.calls)
+
+
+def test_touch_focus_paths():
+    end, camera, _ = _make_end()
+    end._state.focus_mode = 1
+    camera.calls.clear()
+
+    assert end.handle_touch(0.5, 0.5) is True
+    names = [name for name, _ in camera.calls]
+    assert "focus_window_at" in names
+    assert "set_af_window" in names
+    assert "trigger_autofocus" in names
+
+    end._state.focus_mode = 0
+    assert end.handle_touch(0.5, 0.5) is False
+
+    end._state.focus_mode = 1
+    end._state.touch_focus = False
+    assert end.handle_touch(0.5, 0.5) is False
+
+    end._state.touch_focus = True
+    end._state.is_busy = True
+    assert end.handle_touch(0.5, 0.5) is False
+
+
+def test_diagnostics_page_and_second_page():
+    end, camera, _ = _make_end()
+
+    page = end._diagnostics_page()
+    assert page["AeState {}"] == "Converged"
+    assert page["AfState {}"] == "Focused"
+    assert page["AfPause {}"] == "Running"
+    assert page["SensorT {}"] == "45.0C"
+    assert page["Stats {}"] == "OFF"
+    assert "SensorTs {}" in page
+    assert "WallClock {}" in page
+    assert end._decorator.total_pages == 2
+
+    camera.metadata["PispStatsOutput"] = b"abc"
+    end._state.isp_stats = True
+    page = end._diagnostics_page()
+    assert page["Stats {}"] == "ON"
+    assert page["StatsBlob {}"] == 3
+
+
+def test_af_status_role_follows_af_state():
+    end, camera, _ = _make_end()
+    end._state.status_position = "sides"
+
+    for state, role in ((3, "danger"), (1, "warning"), (2, "success")):
+        camera.metadata["AfState"] = state
+        items = end._status_items()
+        af = next(
+            item
+            for item in items
+            if isinstance(item, StatusItem) and item.label == "AF"
+        )
+        assert af.value_role == role
+
+
+def test_semi_auto_priority_is_passed_to_still_capture():
+    end, camera, tree = _make_end()
+    _set_option(
+        tree,
+        "exposure_priority",
+        {"content": "Shutter Priority", "value": 1},
+    )
+    _set_option(
+        tree,
+        "exposure_time",
+        {"content": "4s", "value": 4_000_000},
+    )
+    end.load_settings()
+    end.shutter_press_action()
+    next(end.main_loop())
+
+    saved = camera.saved[-1]
+    assert saved["exposure_priority"] == 1
+    assert saved["exposure_time"] == 4_000_000
+    assert saved["analogue_gain"] is None
+
+    _set_option(
+        tree,
+        "exposure_priority",
+        {"content": "Gain Priority", "value": 2},
+    )
+    _set_option(tree, "analogue_gain", 2.0)
+    end.load_settings()
+    end.shutter_press_action()
+    next(end.main_loop())
+
+    saved = camera.saved[-1]
+    assert saved["exposure_priority"] == 2
+    assert saved["exposure_time"] is None
+    assert saved["analogue_gain"] == 2.0
+
+
+def test_mf_assist_only_highlights_scene_edges():
+    end, camera, _ = _make_end()
+    end._state.mf_assist = True
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    frame[:, 160:] = 255
+    camera.preview = lambda: iter([frame.copy()])
+
+    rendered = next(end.main_loop())
+
+    # The first peaking refresh uses red; the scene boundary must light up.
+    assert np.any(np.all(rendered == (0, 0, 255), axis=2))
+
+
+def test_mf_assist_does_not_highlight_ui_overlays():
+    rendered = []
+    for mf_assist in (False, True):
+        end, camera, _ = _make_end()
+        end._state.mf_assist = mf_assist
+        end._state.show_grid = True
+        end._state.show_center = True
+        end._state.show_zebra = True
+        end._state.zebra_threshold = 200
+        end._state.show_hist = True
+        end._state.status_position = "top_bottom"
+        frame = np.full((240, 320, 3), 255, dtype=np.uint8)
+        camera.preview = lambda: iter([frame.copy()])
+        rendered.append(next(end.main_loop()).copy())
+
+    # A uniform scene has no real edges.  Grid, zebra, histogram and status
+    # text must not create peaking edges, so both renders are identical.
+    assert np.array_equal(rendered[0], rendered[1])
+
+
+def test_mf_assist_is_visible_over_histogram_box():
+    end, camera, _ = _make_end()
+    end._state.mf_assist = True
+    end._state.show_hist = True
+    end._state.show_grid = False
+    end._state.show_center = False
+    end._state.show_zebra = False
+    end._state.status_position = "off"
+
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+    # A vertical scene edge inside the histogram rectangle.
+    frame[180:220, 250:252] = 255
+    camera.preview = lambda: iter([frame.copy()])
+
+    rendered = next(end.main_loop())
+
+    left, top, right, bottom = 214, 170, 314, 234
+    region = rendered[top:bottom, left:right]
+    red = (region[:, :, 2] > 200) & (region[:, :, 1] < 150)
+    assert red.any()
+
+

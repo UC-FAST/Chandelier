@@ -10,6 +10,8 @@ preview server streams the device screen and provides remote controls.
 - Shutter presets from 1/8000 to 30s; presets longer than 1/15s are used for
   stills only so the live preview stays responsive
 - HDR modes require Auto Exposure; turning Auto Exposure off clears HDR
+- JPEG, PNG and TIFF stills carry standard EXIF (date, camera model,
+  exposure time and ISO); DNG embeds the full libcamera metadata as JSON
 - Gallery browsing from local storage
 - System monitor pages: hardware, power, network and services
 - Direction-of-arrival estimation (SRP-PHAT + DUET) with Silero VAD

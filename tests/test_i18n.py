@@ -171,3 +171,71 @@ def test_menu_language_change_is_applied_and_persisted(
         if option["id"] == "language"
     )
     assert language["value"]["value"] == "zh_CN"
+
+
+def test_new_camera_controls_have_translations():
+    keys = (
+        "Touch Focus",
+        "Exposure Priority",
+        "Shutter Priority",
+        "Gain Priority",
+        "Noise Reduction",
+        "High Quality",
+        "AF Pause",
+        "Preview FPS",
+        "Colour Temperature",
+        "ISP Stats",
+    )
+    expected = {
+        "zh_CN": (
+            "触摸对焦",
+            "曝光优先",
+            "快门优先",
+            "增益优先",
+            "降噪",
+            "高质量",
+            "对焦暂停",
+            "预览帧率",
+            "色温",
+            "ISP 统计",
+        ),
+        "zh_TW": (
+            "觸控對焦",
+            "曝光優先",
+            "快門優先",
+            "增益優先",
+            "降噪",
+            "高品質",
+            "對焦暫停",
+            "預覽幀率",
+            "色溫",
+            "ISP 統計",
+        ),
+        "ru": (
+            "Сенсорная фокусировка",
+            "Приоритет экспозиции",
+            "Приоритет выдержки",
+            "Приоритет усиления",
+            "Шумоподавление",
+            "Высокое качество",
+            "Пауза автофокуса",
+            "Частота кадров",
+            "Цветовая температура",
+            "Статистика ISP",
+        ),
+    }
+    for language, values in expected.items():
+        translator.set_language(language)
+        assert tuple(tr(key) for key in keys) == values
+
+
+def test_virtual_button_labels_have_translations():
+    keys = ("Overlay", "Rotate left", "Rotate right", "Select")
+    expected = {
+        "zh_CN": ("叠加", "左旋", "右旋", "选择"),
+        "zh_TW": ("疊加", "左旋", "右旋", "選取"),
+        "ru": ("Оверлей", "Влево", "Вправо", "Выбор"),
+    }
+    for language, values in expected.items():
+        translator.set_language(language)
+        assert tuple(tr(key) for key in keys) == values

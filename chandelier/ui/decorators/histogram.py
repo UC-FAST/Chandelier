@@ -366,7 +366,11 @@ class Histogram:
         overlay = np.zeros_like(frame)
         mask = np.zeros(frame.shape[:2], dtype=np.uint8)
         plot_width = right - left
-        plot_height = bottom - top
+        # Keep a visible margin inside the 1 px border.  Scaling the tallest
+        # bar to the full box height made it touch the top edge, which read
+        # as "outside the box" even before anti-aliasing bled a row further.
+        inset_x = 2
+        plot_height = max(1, bottom - top - 6)
         heights = self._bar_heights(plot_height)
         if not heights:
             return overlay, mask
@@ -375,15 +379,23 @@ class Histogram:
         # corners) instead of one rectangle per bin: a single fillPoly is
         # considerably cheaper at 30 fps on the Pi's CPU.
         bin_count = len(heights[0])
-        xs = left + (np.arange(bin_count) + 0.5) * plot_width / bin_count
-        baseline = bottom - 1
+        xs = (
+            left
+            + inset_x
+            + (np.arange(bin_count) + 0.5)
+            * max(1, plot_width - 2 * inset_x)
+            / bin_count
+        )
+        baseline = bottom - 3
         # Reused scratch layer; filling a fresh canvas per channel would
         # allocate several frame-sized arrays per rendered frame.
         layer = np.zeros_like(frame)
         for index, channel_heights in enumerate(heights):
             points = np.column_stack(
                 (
-                    np.concatenate((xs, [right - 1, left])),
+                    np.concatenate(
+                        (xs, [right - 1 - inset_x, left + inset_x])
+                    ),
                     np.concatenate(
                         (
                             baseline - channel_heights,
@@ -406,6 +418,18 @@ class Histogram:
             # Saturating add: overlapping channels light up in the mixed
             # colour instead of hiding each other.
             cv2.add(overlay, layer, overlay)
+
+        # Defensive clip: anti-aliased polygon edges may bleed one pixel
+        # beyond their coordinates, and the plot must never touch anything
+        # outside the frame rectangle.
+        overlay[:top] = 0
+        overlay[bottom:] = 0
+        overlay[:, :left] = 0
+        overlay[:, right:] = 0
+        mask[:top] = 0
+        mask[bottom:] = 0
+        mask[:, :left] = 0
+        mask[:, right:] = 0
         return overlay, mask
 
     def _compose(
@@ -477,13 +501,15 @@ class Histogram:
         self._compose(canvas, overlay, mask)
 
         if self._border:
+            # LINE_8 keeps the 1 px border exactly on the plot rectangle;
+            # anti-aliasing bled one row/column outside the box.
             cv2.rectangle(
                 canvas,
                 (left, top),
                 (right - 1, bottom - 1),
                 _BORDER_COLOR,
                 1,
-                cv2.LINE_AA,
+                cv2.LINE_8,
             )
 
         if grayscale:

@@ -40,6 +40,8 @@ class MenuOptionId(str, Enum):
     WATERMARK = "watermark"
     AUTO_EXPOSE = "auto_expose"
     EXPOSURE_MODE = "exposure_mode"
+    EXPOSURE_PRIORITY = "exposure_priority"
+    NOISE_REDUCTION = "noise_reduction"
     CONSTRAINT_MODE = "constraint_mode"
     METERING_MODE = "metering_mode"
     SHOW_HIST = "show_hist"
@@ -50,6 +52,7 @@ class MenuOptionId(str, Enum):
     FLICKER_PERIOD = "flicker_period"
     AWB = "awb"
     AWB_MODE = "awb_mode"
+    COLOUR_TEMPERATURE = "colour_temperature"
     COLOR_GAINS = "color_gains"
     RED_GAIN = "red_gain"
     BLUE_GAIN = "blue_gain"
@@ -63,6 +66,7 @@ class MenuOptionId(str, Enum):
     SHOW_ZEBRA = "show_zebra"
     ZEBRA_THRESHOLD = "zebra_threshold"
     STATUS_BAR_POSITION = "status_bar_position"
+    PREVIEW_FPS = "preview_fps"
 
     # Capture modes
     CAPTURE = "capture"
@@ -76,8 +80,10 @@ class MenuOptionId(str, Enum):
     FOCUS = "focus"
     AF_MODE = "af_mode"
     AF_TRIGGER = "af_trigger"
+    AF_PAUSE = "af_pause"
     AF_SPEED = "af_speed"
     AF_RANGE = "af_range"
+    TOUCH_FOCUS = "touch_focus"
     MANUAL_FOCUS = "manual_focus"
     FOCUS_POSITION = "focus_position"
     MF_ASSIST = "mf_assist"
@@ -90,6 +96,7 @@ class MenuOptionId(str, Enum):
     SATURATION = "saturation"
     CONTRAST = "contrast"
     SHARPNESS = "sharpness"
+    ISP_STATS = "isp_stats"
 
     # Recording
     RECORD = "record"

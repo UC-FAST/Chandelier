@@ -69,6 +69,12 @@ class FakeCamera:
             "Lux": 120.5,
             "ColourTemperature": 5000,
             "FocusFoM": 42,
+            "AeState": 2,
+            "AfState": 2,
+            "AfPauseState": 0,
+            "SensorTemperature": 45.0,
+            "SensorTimestamp": 1_234_567_890_000,
+            "FrameWallClock": 1_700_000_000_000_000_000,
         }
         self.frame_per_second = 30.0
         self.calls: list[tuple[str, dict]] = []
@@ -147,6 +153,43 @@ class FakeCamera:
 
     def set_awb_lock(self, enable) -> None:
         self._record("set_awb_lock", enable=enable)
+
+    def set_exposure_priority(
+        self, priority, exposure_time, analogue_gain
+    ) -> bool:
+        self._record(
+            "set_exposure_priority",
+            priority=priority,
+            exposure_time=exposure_time,
+            analogue_gain=analogue_gain,
+        )
+        return True
+
+    def set_noise_reduction(self, mode) -> None:
+        self._record("set_noise_reduction", mode=mode)
+
+    def set_af_pause(self, paused) -> None:
+        self._record("set_af_pause", paused=paused)
+
+    def set_frame_rate(self, fps) -> None:
+        self._record("set_frame_rate", fps=fps)
+
+    def set_colour_temperature(self, kelvin) -> bool:
+        self._record("set_colour_temperature", kelvin=kelvin)
+        return True
+
+    def set_stats_output(self, enable) -> None:
+        self._record("set_stats_output", enable=enable)
+
+    def focus_window_at(self, nx, ny, fraction=0.2):
+        self._record(
+            "focus_window_at", nx=nx, ny=ny, fraction=fraction
+        )
+        return (10, 10, 64, 64)
+
+    def set_af_window(self, window) -> bool:
+        self._record("set_af_window", window=window)
+        return True
 
     def set_focus(self, manual, position) -> None:
         self._record("set_focus", manual=manual, position=position)

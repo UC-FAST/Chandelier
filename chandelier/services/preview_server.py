@@ -247,7 +247,10 @@ _INDEX_TEMPLATE = """<!doctype html>
   }
   .ok:hover { filter: brightness(1.08); }
   .ok:active { filter: brightness(.92); }
-  .keys { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .keys {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+  }
+  .key.wide { grid-column: span 2; }
   .key {
     display: flex; align-items: center; justify-content: center; gap: 8px;
     height: 54px; border-radius: 17px;
@@ -260,7 +263,11 @@ _INDEX_TEMPLATE = """<!doctype html>
   .key:hover { filter: brightness(1.15); }
   .key:active { transform: scale(.97); filter: brightness(.92); }
   .key .icon { width: 20px; height: 20px; }
-  .key-label { font-size: .74rem; font-weight: 600; letter-spacing: .02em; }
+  .key-label {
+    min-width: 0; white-space: nowrap; overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: .74rem; font-weight: 600; letter-spacing: .02em;
+  }
   .icon {
     fill: none; stroke: currentColor; stroke-width: 2;
     stroke-linecap: round; stroke-linejoin: round;
@@ -291,7 +298,8 @@ _INDEX_TEMPLATE = """<!doctype html>
     }
     .dir .icon { width: 18px; height: 18px; }
     .ok { font-size: .68rem; letter-spacing: .12em; }
-    .keys { gap: 8px; }
+    .keys { grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .key.wide { grid-column: 1 / -1; }
     .key { height: 36px; border-radius: 12px; gap: 6px; }
     .key .icon { width: 15px; height: 15px; }
     .key-label { font-size: .64rem; }
@@ -307,7 +315,9 @@ _INDEX_TEMPLATE = """<!doctype html>
       width: min(100%, 205px);
       padding: 8px 8px 7px; gap: 6px; border-radius: 24px;
     }
-    .keys { gap: 6px; }
+    .keys { grid-template-columns: repeat(4, 1fr); gap: 6px; }
+    .key.wide { grid-column: span 2; }
+    .key-label { display: none; }
     .key { height: 32px; border-radius: 10px; }
     .key .icon { width: 13px; height: 13px; }
     .key-label { font-size: .6rem; }
@@ -453,6 +463,11 @@ _INDEX_TEMPLATE = """<!doctype html>
     <div class="keys">
       <button class="key" data-action="cross" aria-label="{{BACK}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14l-4-4 4-4"/><path d="M5 10h7a4 4 0 0 1 4 4v2"/></svg><span class="key-label">{{BACK}}</span></button>
       <button class="key" data-action="shutter" aria-label="{{SHOT}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/></svg><span class="key-label">{{SHOT}}</span></button>
+      <button class="key" data-action="square" aria-label="{{MENU}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span class="key-label">{{MENU}}</span></button>
+      <button class="key" data-action="circle" aria-label="{{OVERLAY}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z"/><path d="M3 12l9 5 9-5"/></svg><span class="key-label">{{OVERLAY}}</span></button>
+      <button class="key" data-action="rotary_counter_clockwise" aria-label="{{ROTATE_LEFT}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10a8 8 0 1 1 2.4 5.7"/><path d="M4 4v6h6"/></svg></button>
+      <button class="key" data-action="rotary_clockwise" aria-label="{{ROTATE_RIGHT}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10a8 8 0 1 0-2.4 5.7"/><path d="M20 4v6h-6"/></svg></button>
+      <button class="key wide" data-action="rotary_select" aria-label="{{SELECT}}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg><span class="key-label">{{SELECT}}</span></button>
     </div>
   </section>
 </main>
@@ -489,9 +504,45 @@ const refreshTheme = () => {
 };
 setInterval(refreshTheme, 3000);
 
+const holdActions = new Set(['up', 'down', 'left', 'right', 'center']);
 document.querySelectorAll('[data-action]').forEach((button) => {
-  button.addEventListener('click', () => {
-    post('/control', {action: button.dataset.action});
+  const action = button.dataset.action;
+  if (!holdActions.has(action)) {
+    button.addEventListener('click', () => post('/control', {action}));
+    return;
+  }
+  // Direction keys and OK report both edges, matching the physical panel.
+  // Hold to keep zooming or adjusting brightness; release to stop.
+  let pressed = false;
+  let pointerHandled = false;
+  const press = () => {
+    pressed = true;
+    post('/control', {action, phase: 'press'});
+  };
+  const release = () => {
+    if (!pressed) return;
+    pressed = false;
+    post('/control', {action, phase: 'release'});
+  };
+  button.addEventListener('pointerdown', (event) => {
+    if (event.button !== undefined && event.button !== 0) return;
+    pointerHandled = true;
+    if (button.setPointerCapture) {
+      try { button.setPointerCapture(event.pointerId); } catch (_) {}
+    }
+    press();
+  });
+  ['pointerup', 'pointercancel', 'pointerleave', 'lostpointercapture']
+    .forEach((name) => button.addEventListener(name, release));
+  button.addEventListener('click', (event) => {
+    event.preventDefault();
+    if (pointerHandled) {
+      pointerHandled = false;
+      return;
+    }
+    // Keyboard/assistive activation has no hold phase: send a full pair.
+    post('/control', {action, phase: 'press'})
+      .then(() => post('/control', {action, phase: 'release'}));
   });
 });
 document.querySelectorAll('[data-screen]').forEach((button) => {
@@ -1323,6 +1374,10 @@ def _index_html() -> bytes:
         "BACK": escape(tr("Back")),
         "DOWN": escape(tr("Down")),
         "SHOT": escape(tr("Shot")),
+        "OVERLAY": escape(tr("Overlay")),
+        "ROTATE_LEFT": escape(tr("Rotate left")),
+        "ROTATE_RIGHT": escape(tr("Rotate right")),
+        "SELECT": escape(tr("Select")),
         "CONNECTING": escape(tr("connecting...")),
         "SNAPSHOT": escape(tr("snapshot")),
         "STREAM_CONNECTED": json.dumps(tr("stream connected")),
@@ -1552,8 +1607,10 @@ class PreviewServer:
             logger.exception("preview touch failed")
             return False
 
-    def send_action(self, name: str) -> bool:
-        """Deliver a remote button name as an ``Action`` press event."""
+    def send_action(
+        self, name: str, phase: Phase = Phase.PRESS
+    ) -> bool:
+        """Deliver a remote button event as an ``Action``/``Phase`` pair."""
 
         handler = self._action_handler
         if handler is None:
@@ -1563,9 +1620,15 @@ class PreviewServer:
         except ValueError:
             return False
         try:
-            return bool(handler(action, Phase.PRESS))
+            phase = Phase(phase)
+        except ValueError:
+            return False
+        try:
+            return bool(handler(action, phase))
         except Exception:
-            logger.exception("preview action %r failed", name)
+            logger.exception(
+                "preview action %r (%s) failed", name, phase.value
+            )
             return False
 
     def switch_to(self, screen_id: str) -> bool:
@@ -2269,12 +2332,23 @@ class _PreviewHandler(BaseHTTPRequestHandler):
         )
 
     def _control(self) -> None:
-        """Handle a remote button press from the preview page."""
+        """Handle a remote button event from the preview page."""
 
         data = self._read_json()
         action = data.get("action") if isinstance(data, dict) else None
-        ok = bool(action) and self.server.preview.send_action(str(action))
-        self._json_response(200 if ok else 400, {"ok": ok})
+        phase = data.get("phase", Phase.PRESS.value) if isinstance(
+            data, dict
+        ) else None
+        try:
+            phase = Phase(str(phase))
+        except ValueError:
+            phase = None
+        ok = (
+            bool(action)
+            and phase is not None
+            and self.server.preview.send_action(str(action), phase)
+        )
+        self._json_response(200 if ok else 400, {"ok": bool(ok)})
 
     def _screen(self) -> None:
         """Handle a screen tab selection."""

@@ -17,12 +17,15 @@ def test_registry_and_fallback():
         "liquid_glass",
         "win2000",
         "win7",
+        "decade",
     }
     assert get_theme("dark_pro").id == "dark_pro"
     assert get_theme("aero").render_style == "aero"
     assert get_theme("classic").render_style == "classic"
     assert get_theme("ubuntu").render_style == "modern"
     assert get_theme("liquid_glass").render_style == "modern"
+    assert get_theme("decade").render_style == "modern"
+    assert get_theme("decade").accent == (135, 0, 235)
     assert get_theme("win2000").render_style == "win2000"
     assert get_theme("win7").render_style == "win7"
     assert get_theme("does_not_exist").id == DEFAULT_THEME_ID

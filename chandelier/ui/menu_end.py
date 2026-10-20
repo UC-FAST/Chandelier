@@ -118,6 +118,12 @@ class MenuControlledEnd(ControlledEnd):
         """
 
     OPTION_VISIBLE_COUNT = 5
+    # Right-margin scrollbar.  The menu rows end at width - padding[2], so
+    # the last few pixels are free for a narrow rail.
+    SCROLLBAR_WIDTH = 5
+    SCROLLBAR_GAP = 2
+    SCROLLBAR_MARGIN = 1
+    SCROLLBAR_MIN_THUMB = 6
 
     def __init__(
             self,
@@ -241,6 +247,12 @@ class MenuControlledEnd(ControlledEnd):
         self._value_anim_from = 0.0
         self._value_anim_to = 0.0
         self._value_anim_duration = 0.16
+        # The paged list snaps its content, but the rail thumb glides to the
+        # new page so a jump does not look like a dropped frame.
+        self._scroll_anim_start: float | None = None
+        self._scroll_anim_from = 0.0
+        self._scroll_anim_to = 0.0
+        self._scroll_anim_duration = 0.18
         # main_loop sleeps to this cadence while an animation is running.
         self._anim_interval = 1 / 60
         self._logger.info(
@@ -337,6 +349,7 @@ class MenuControlledEnd(ControlledEnd):
         """
 
         self._option_list = self._menu_options[key]
+        self._cancel_scroll_animation()
         # Every section starts at its root page "0"; the route stack only
         # needs to record parents for Back navigation.
         self._current_menu_id = "0"
@@ -520,9 +533,31 @@ class MenuControlledEnd(ControlledEnd):
 
     def _jump_to_previous(self):
         """Pop the route stack and restore its page and row."""
-        last = self._route_list.pop()
-        self._jump_by_id(last[0], record=False)
-        self._current_index = last[1]
+        menu_id, page, index = self._route_list.pop()
+        self._jump_by_id(menu_id, record=False)
+        page = min(max(0, page), max(0, self._page_count - 1))
+        self._cancel_scroll_animation()
+        self._current_page = page
+        start = page * self._row_count
+        self._current_options = self._options[
+            start:start + self._row_count
+        ]
+        if (
+            0 <= index < len(self._current_options)
+            and self._current_options[index].get("enable", True)
+        ):
+            self._current_index = index
+        else:
+            # The parent's enable conditions may have changed while the
+            # child menu was open; fall back to the first usable row.
+            self._current_index = next(
+                (
+                    row
+                    for row, option in enumerate(self._current_options)
+                    if option.get("enable", True)
+                ),
+                0,
+            )
 
     def _apply_enable_conditions(self) -> None:
         """Apply declarative ``enable_if`` dependencies for option values."""
@@ -548,10 +583,21 @@ class MenuControlledEnd(ControlledEnd):
 
         for option in all_options:
             condition = option.get("enable_if")
-            if not isinstance(condition, dict):
+            if isinstance(condition, dict):
+                conditions = [condition]
+            elif isinstance(condition, list):
+                conditions = [
+                    item for item in condition if isinstance(item, dict)
+                ]
+            else:
                 continue
-            option["enable"] = (
-                values.get(condition.get("id")) == condition.get("value")
+            if not conditions:
+                continue
+            # A list means OR: full manual exposure or the matching
+            # semi-auto priority both leave the fixed value editable.
+            option["enable"] = any(
+                values.get(item.get("id")) == item.get("value")
+                for item in conditions
             )
 
     def _set_enable_state(self, option):
@@ -868,6 +914,7 @@ class MenuControlledEnd(ControlledEnd):
         self._cancel_cursor_animation()
         if self._current_page == 0:
             return
+        self._start_scroll_animation(self._current_page - 1)
         self._current_page -= 1
         self._current_index = self._row_count - 1
         self._current_options = self._options[
@@ -907,6 +954,7 @@ class MenuControlledEnd(ControlledEnd):
         self._cancel_cursor_animation()
         if self._current_page >= self._page_count - 1:
             return
+        self._start_scroll_animation(self._current_page + 1)
         self._current_page += 1
         self._current_index = 0
         self._current_options = self._options[
@@ -985,6 +1033,36 @@ class MenuControlledEnd(ControlledEnd):
     def _cancel_option_animation(self) -> None:
         self._option_anim_start = None
 
+    def _scroll_page_position(self) -> float:
+        """Thumb page position, eased while a page transition runs."""
+
+        if self._scroll_anim_start is None:
+            return float(self._current_page)
+        elapsed = time.monotonic() - self._scroll_anim_start
+        progress = self._ease(
+            elapsed / self._scroll_anim_duration
+        )
+        if elapsed >= self._scroll_anim_duration:
+            self._scroll_anim_start = None
+            return self._scroll_anim_to
+        return self._scroll_anim_from + (
+            self._scroll_anim_to - self._scroll_anim_from
+        ) * progress
+
+    def _start_scroll_animation(self, target_page: int) -> None:
+        """Glide the rail thumb from the current page to ``target_page``."""
+
+        current = self._scroll_page_position()
+        if abs(current - target_page) < 1e-3:
+            self._scroll_anim_start = None
+            return
+        self._scroll_anim_from = current
+        self._scroll_anim_to = float(target_page)
+        self._scroll_anim_start = time.monotonic()
+
+    def _cancel_scroll_animation(self) -> None:
+        self._scroll_anim_start = None
+
     def _numeric_position(self, value: float) -> float:
         """Numeric value to display while its edit animation runs."""
         if self._value_anim_start is None:
@@ -1013,6 +1091,7 @@ class MenuControlledEnd(ControlledEnd):
             self._cursor_anim_start is not None
             or self._option_anim_start is not None
             or self._value_anim_start is not None
+            or self._scroll_anim_start is not None
         )
 
     def _expire_animations(self, now: float) -> None:
@@ -1035,6 +1114,12 @@ class MenuControlledEnd(ControlledEnd):
             >= self._value_anim_duration
         ):
             self._value_anim_start = None
+        if (
+            self._scroll_anim_start is not None
+            and now - self._scroll_anim_start
+            >= self._scroll_anim_duration
+        ):
+            self._scroll_anim_start = None
 
     def _jump_by_index(self, index):
         """Open the submenu referenced by the option at ``index``."""
@@ -1045,11 +1130,17 @@ class MenuControlledEnd(ControlledEnd):
         self._cancel_cursor_animation()
         self._cancel_option_animation()
         self._cancel_value_animation()
+        self._cancel_scroll_animation()
         if record:
-            # Back restores both the parent page and the row it was left on.
+            # Back restores the parent page and the row it was left on.
             # Replays from _jump_to_previous() pass record=False.
             self._route_list.append(
-                (self._current_menu_id, self._current_index))
+                (
+                    self._current_menu_id,
+                    self._current_page,
+                    self._current_index,
+                )
+            )
         self._current_menu_id = target
         self._title = self._option_list[self._current_menu_id].get(
             'title', None)
@@ -1090,8 +1181,13 @@ class MenuControlledEnd(ControlledEnd):
 
     def _touch_list(self, px: float, py: float) -> bool:
         """Hit-test the visible rows; tap selects or moves the cursor."""
+        geometry = self._list_scroll_geometry()
+        if geometry is not None and px >= geometry[0]:
+            return self._touch_list_scrollbar(
+                py, geometry[2], geometry[3], geometry[4], geometry[5]
+            )
         x1 = self._padding[0]
-        x2 = self._width - self._padding[2]
+        x2 = self._content_right()
         if not (x1 <= px <= x2):
             return False
         # Rows have a uniform height starting at _content_top, so the row
@@ -1112,6 +1208,43 @@ class MenuControlledEnd(ControlledEnd):
             self._current_index = row
             self._start_cursor_animation(start, row)
         self.decorate()
+        return True
+
+    def _touch_list_scrollbar(
+        self, py: float, top: int, length: int,
+        thumb_top: int, thumb_height: int,
+    ) -> bool:
+        """Jump to the page implied by a tap on the list rail."""
+
+        if not (top <= py < top + length):
+            return False
+        if thumb_top <= py < thumb_top + thumb_height:
+            # Tapping the current thumb is a harmless no-op.
+            return True
+        travel = max(1, length - thumb_height)
+        fraction = (py - top - thumb_height / 2) / travel
+        fraction = min(1.0, max(0.0, fraction))
+        page = int(
+            fraction * max(0, self._page_count - 1) + 0.5
+        )
+        if page != self._current_page:
+            self._cancel_cursor_animation()
+            self._start_scroll_animation(page)
+            self._current_page = page
+            start = page * self._row_count
+            self._current_options = self._options[
+                start:start + self._row_count
+            ]
+            # Land on the first enabled row of the target page.
+            self._current_index = next(
+                (
+                    index
+                    for index, option in enumerate(self._current_options)
+                    if option.get("enable", True)
+                ),
+                0,
+            )
+            self.decorate()
         return True
 
     def _touch_option(self, px: float, py: float) -> bool:
@@ -1137,9 +1270,14 @@ class MenuControlledEnd(ControlledEnd):
             self._option_list_geometry(selected, len(choices))
         )
         x1 = self._padding[0]
-        x2 = self._width - self._padding[2]
+        x2 = self._content_right()
+        columns = self._scrollbar_columns()
+        rail_tappable = (
+            columns is not None and len(choices) > visible
+        )
         if not (x1 <= px <= x2):
-            return False
+            if not (rail_tappable and px >= columns[0]):
+                return False
         row = int((py - block_top) // row_height)
         if row < 0 or row >= visible:
             return False
@@ -1674,12 +1812,26 @@ class MenuControlledEnd(ControlledEnd):
         if radius == 0:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
             return
+
+        # Draw into a copy of the bounding box so anti-aliased circles
+        # cannot bleed a pixel outside the shape.  This is what kept the
+        # value-badge and scrollbar capsule caps looking wider than the body.
+        height, width = frame.shape[:2]
+        bx1, by1 = max(0, x1), max(0, y1)
+        bx2, by2 = min(width - 1, x2), min(height - 1, y2)
+        if bx2 < bx1 or by2 < by1:
+            return
+        region = frame[by1:by2 + 1, bx1:bx2 + 1].copy()
+        # Local coordinates inside the clipped region.
+        x1, x2 = x1 - bx1, x2 - bx1
+        y1, y2 = y1 - by1, y2 - by1
+
         if thickness < 0:
             cv2.rectangle(
-                frame, (x1 + radius, y1), (x2 - radius, y2), color, -1
+                region, (x1 + radius, y1), (x2 - radius, y2), color, -1
             )
             cv2.rectangle(
-                frame, (x1, y1 + radius), (x2, y2 - radius), color, -1
+                region, (x1, y1 + radius), (x2, y2 - radius), color, -1
             )
             for cx, cy in (
                 (x1 + radius, y1 + radius),
@@ -1687,13 +1839,24 @@ class MenuControlledEnd(ControlledEnd):
                 (x1 + radius, y2 - radius),
                 (x2 - radius, y2 - radius),
             ):
-                cv2.circle(frame, (cx, cy), radius, color, -1, cv2.LINE_AA)
+                cv2.circle(
+                    region, (cx, cy), radius, color, -1, cv2.LINE_AA
+                )
+            frame[by1:by2 + 1, bx1:bx2 + 1] = region
             return
 
-        cv2.line(frame, (x1 + radius, y1), (x2 - radius, y1), color, thickness)
-        cv2.line(frame, (x1 + radius, y2), (x2 - radius, y2), color, thickness)
-        cv2.line(frame, (x1, y1 + radius), (x1, y2 - radius), color, thickness)
-        cv2.line(frame, (x2, y1 + radius), (x2, y2 - radius), color, thickness)
+        cv2.line(
+            region, (x1 + radius, y1), (x2 - radius, y1), color, thickness
+        )
+        cv2.line(
+            region, (x1 + radius, y2), (x2 - radius, y2), color, thickness
+        )
+        cv2.line(
+            region, (x1, y1 + radius), (x1, y2 - radius), color, thickness
+        )
+        cv2.line(
+            region, (x2, y1 + radius), (x2, y2 - radius), color, thickness
+        )
         for center, start, end in (
             ((x1 + radius, y1 + radius), 180, 270),
             ((x2 - radius, y1 + radius), 270, 360),
@@ -1701,7 +1864,7 @@ class MenuControlledEnd(ControlledEnd):
             ((x2 - radius, y2 - radius), 0, 90),
         ):
             cv2.ellipse(
-                frame,
+                region,
                 center,
                 (radius, radius),
                 0,
@@ -1711,6 +1874,7 @@ class MenuControlledEnd(ControlledEnd):
                 thickness,
                 cv2.LINE_AA,
             )
+        frame[by1:by2 + 1, bx1:bx2 + 1] = region
 
     def _pixel_height(self, font_scale) -> int:
         """Map one of the scale constants back to its pixel height."""
@@ -1802,6 +1966,12 @@ class MenuControlledEnd(ControlledEnd):
                 return f"{float(value):+.1f}EV"
             except (TypeError, ValueError):
                 return str(value)
+        if fmt == "kelvin":
+            try:
+                kelvin = int(value)
+            except (TypeError, ValueError):
+                return str(value)
+            return "Auto" if kelvin <= 0 else f"{kelvin}K"
         if fmt == "seconds":
             try:
                 return f"{float(value):g}s"
@@ -1878,6 +2048,152 @@ class MenuControlledEnd(ControlledEnd):
         """Return the top and bottom y coordinates of a list row."""
         y1 = self._content_top + index * self._row_height
         return y1, y1 + self._row_height
+
+    # ------------------------------------------------------------------
+    # Scrollbar
+    # ------------------------------------------------------------------
+    def _scrollbar_columns(self) -> tuple[int, int] | None:
+        """Return the inclusive x range of the right-margin rail."""
+
+        # The classic skin already has its own slide bar and option menu.
+        if self._menu_theme.render_style == "classic":
+            return None
+        x2 = max(0, self._width - 1 - self.SCROLLBAR_MARGIN)
+        x1 = max(0, x2 - self.SCROLLBAR_WIDTH + 1)
+        # Keep the rail, its gap and the row content from overlapping on
+        # narrow or large-padding layouts.
+        if x1 - self.SCROLLBAR_GAP - 1 < self._padding[0]:
+            return None
+        return x1, x2
+
+    def _content_right(self) -> int:
+        """Right edge of rows/editor content, leaving room for the rail."""
+
+        columns = self._scrollbar_columns()
+        if columns is None:
+            return self._width - self._padding[2]
+        return max(
+            self._padding[0],
+            columns[0] - self.SCROLLBAR_GAP - 1,
+        )
+
+    @classmethod
+    def _scroll_thumb(
+        cls,
+        top: int,
+        length: int,
+        first: float,
+        visible: int,
+        total: int,
+    ) -> tuple[int, int] | None:
+        """Return ``(thumb_top, thumb_height)`` for a scroll position."""
+
+        if length <= 0 or visible <= 0 or total <= visible:
+            return None
+        thumb_height = int(length * visible / total + 0.5)
+        thumb_height = max(
+            cls.SCROLLBAR_MIN_THUMB, min(length, thumb_height)
+        )
+        max_first = max(0, total - visible)
+        travel = max(0, length - thumb_height)
+        fraction = (
+            0.0
+            if max_first == 0
+            else min(1.0, max(0.0, first / max_first))
+        )
+        return top + int(travel * fraction + 0.5), thumb_height
+
+    def _list_scroll_geometry(self):
+        """Return rail geometry for the paged list, or ``None``."""
+
+        pages = max(1, self._page_count)
+        if pages <= 1:
+            return None
+        columns = self._scrollbar_columns()
+        if columns is None:
+            return None
+        top = self._content_top
+        length = max(0, self._content_bottom - top)
+        page = min(
+            max(0.0, self._scroll_page_position()), pages - 1
+        )
+        # Virtual page slots keep every page's thumb equally tall even when
+        # the last page contains fewer than row_count entries.
+        thumb = self._scroll_thumb(
+            top,
+            length,
+            page * self._row_count,
+            self._row_count,
+            pages * self._row_count,
+        )
+        if thumb is None:
+            return None
+        return columns[0], columns[1], top, length, thumb[0], thumb[1]
+
+    def _draw_scrollbar(
+        self, frame, x1: int, x2: int, top: int, length: int,
+        thumb_top: int, thumb_height: int,
+    ) -> None:
+        """Draw a muted track with an accent thumb in the right margin."""
+
+        theme = self._menu_theme
+        height = length
+        width = x2 - x1 + 1
+        if height <= 0 or width <= 0:
+            return
+        # Draw on a clipped copy of the rail column.  OpenCV's anti-aliased
+        # circles bleed a pixel past their radius; compositing into a
+        # width-limited region keeps the capsule caps inside the rail.
+        region = frame[top:top + height, x1:x2 + 1].copy()
+        radius = max(1, (width - 1) // 2)
+        self._rounded_rect(
+            region, 0, 0, width - 1, height - 1,
+            theme.surface_alt, radius,
+        )
+        self._rounded_rect(
+            region, 0, 0, width - 1, height - 1,
+            theme.border, radius, 1,
+        )
+        thumb_y = thumb_top - top
+        self._rounded_rect(
+            region,
+            0,
+            thumb_y,
+            width - 1,
+            thumb_y + thumb_height - 1,
+            theme.accent,
+            radius,
+        )
+        frame[top:top + height, x1:x2 + 1] = region
+
+    def _draw_list_scrollbar(self, frame) -> None:
+        """Draw the paged-list rail when the list spans multiple pages."""
+
+        geometry = self._list_scroll_geometry()
+        if geometry is not None:
+            self._draw_scrollbar(frame, *geometry)
+
+    def _draw_option_scrollbar(
+        self, frame, top: int, length: int, first: float,
+        visible: int, total: int,
+    ) -> None:
+        """Draw the option-editor rail when its choice list overflows."""
+
+        columns = self._scrollbar_columns()
+        thumb = self._scroll_thumb(
+            top, length, first, visible, total
+        )
+        if columns is None or thumb is None:
+            return
+        self._draw_scrollbar(
+            frame,
+            columns[0],
+            columns[1],
+            top,
+            length,
+            thumb[0],
+            thumb[1],
+        )
 
     def _draw_header(self, frame) -> None:
         """Draw the modern title bar and its page-number pill."""
@@ -2039,7 +2355,7 @@ class MenuControlledEnd(ControlledEnd):
         theme = self._menu_theme
         y1, y2 = self._row_geometry(index)
         x1 = self._padding[0]
-        x2 = self._width - self._padding[2]
+        x2 = self._content_right()
         editing = self._select_index is not None
         cursor_pos = self._cursor_position() if not editing else None
         animating = (
@@ -2542,7 +2858,7 @@ class MenuControlledEnd(ControlledEnd):
             self._option_list_geometry(selected, len(choices))
         )
         x1 = self._padding[0]
-        x2 = self._width - self._padding[2]
+        x2 = self._content_right()
         block_height = row_height * visible
         retro = self._retro_style
         if retro == "aero":
@@ -2619,6 +2935,16 @@ class MenuControlledEnd(ControlledEnd):
         y2 = min(self._height, block_top + block_height + 4)
         x2c = min(self._width, x2 + 1)
         frame[y1:y2, x1:x2c] = overlay[y1:y2, x1:x2c]
+        # The rail lives right of x2c, so draw it after the blit; using the
+        # eased start_pos keeps the thumb in step with the row animation.
+        self._draw_option_scrollbar(
+            frame,
+            block_top,
+            block_height,
+            start_pos,
+            visible,
+            len(choices),
+        )
 
     def _draw_power_confirm(self, frame) -> None:
         """Draw the modal confirmation for power/service actions."""
@@ -3024,7 +3350,7 @@ class MenuControlledEnd(ControlledEnd):
         style = self._retro_style
         y1, y2 = self._row_geometry(index)
         x1 = self._padding[0]
-        x2 = self._width - self._padding[2]
+        x2 = self._content_right()
         selected = index == self._current_index and self._select_index is None
         enabled = bool(option.get("enable", True))
 
@@ -3344,6 +3670,8 @@ class MenuControlledEnd(ControlledEnd):
         if self._select_index is None:
             for index, option in enumerate(self._current_options):
                 self._draw_retro_row(sketch, index, option)
+            if not self._confirm_power:
+                self._draw_list_scrollbar(sketch)
             self._draw_retro_preview(sketch)
         else:
             # Editors replace the list area but keep the skin's chrome.
@@ -3411,6 +3739,8 @@ class MenuControlledEnd(ControlledEnd):
         if self._select_index is None:
             for index, option in enumerate(self._current_options):
                 self._draw_row(sketch, index, option)
+            if not self._confirm_power:
+                self._draw_list_scrollbar(sketch)
             self._draw_preview(sketch)
         else:
             item_type = self._current_options[

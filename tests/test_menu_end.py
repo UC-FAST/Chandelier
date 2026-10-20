@@ -924,3 +924,335 @@ def test_every_menu_option_has_a_drawable_icon():
             option.get("id"),
             name,
         )
+
+
+def test_enable_if_list_uses_any_condition(tmp_path):
+    tree = {
+        "camera": {
+            "0": {
+                "title": "Root",
+                "options": [
+                    {
+                        "id": "exposure",
+                        "content": "Exposure",
+                        "type": "menu",
+                        "value": "exposure",
+                    }
+                ],
+            },
+            "exposure": {
+                "title": "Exposure",
+                "options": [
+                    {
+                        "id": "auto_expose",
+                        "content": "Auto Expose",
+                        "type": "bool",
+                        "value": True,
+                    },
+                    {
+                        "id": "exposure_priority",
+                        "content": "Exposure Priority",
+                        "type": "option",
+                        "value": {"content": "Auto", "value": 0},
+                        "options": [
+                            {"content": "Auto", "value": 0},
+                            {"content": "Shutter Priority", "value": 1},
+                        ],
+                    },
+                    {
+                        "id": "exposure_time",
+                        "content": "Exposure Time",
+                        "type": "numeral",
+                        "value": 8000,
+                        "min": 1,
+                        "max": 66666,
+                        "step": 1,
+                        "enable_if": [
+                            {"id": "auto_expose", "value": False},
+                            {"id": "exposure_priority", "value": 1},
+                        ],
+                    },
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+    menu, _, _, _ = _make_menu(tmp_path, tree)
+
+    def option(option_id):
+        for section in menu._option_list.values():
+            for candidate in section.get("options", []):
+                if candidate.get("id") == option_id:
+                    return candidate
+        raise LookupError(option_id)
+
+    menu._apply_enable_conditions()
+    assert option("exposure_time")["enable"] is False
+
+    option("auto_expose")["value"] = False
+    menu._apply_enable_conditions()
+    assert option("exposure_time")["enable"] is True
+
+    option("auto_expose")["value"] = True
+    option("exposure_priority")["value"] = {
+        "content": "Shutter Priority",
+        "value": 1,
+    }
+    menu._apply_enable_conditions()
+    assert option("exposure_time")["enable"] is True
+
+    option("exposure_priority")["value"] = {"content": "Auto", "value": 0}
+    menu._apply_enable_conditions()
+    assert option("exposure_time")["enable"] is False
+
+
+def test_format_value_renders_kelvin(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path)
+    option = {"format": "kelvin"}
+    assert menu._format_value(option, 0) == "Auto"
+    assert menu._format_value(option, 5600) == "5600K"
+
+
+def _scroll_tree(count=12, choices=9, submenu=False):
+    options = [
+        {"id": f"b{index}", "content": f"B{index}", "type": "bool",
+         "value": False}
+        for index in range(count)
+    ]
+    if submenu:
+        options[-1] = {
+            "id": "sub",
+            "content": "Sub",
+            "type": "menu",
+            "value": "sub",
+        }
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": options},
+            "sub": {
+                "title": "Sub",
+                "options": [
+                    {"id": "x", "content": "X", "type": "bool",
+                     "value": False}
+                ],
+            },
+            "pick": {
+                "title": "Pick",
+                "options": [
+                    {
+                        "id": "pick",
+                        "content": "Pick",
+                        "type": "option",
+                        "value": {"content": "0", "value": 0},
+                        "options": [
+                            {"content": str(index), "value": index}
+                            for index in range(choices)
+                        ],
+                    }
+                ],
+            },
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+    return tree
+
+
+def test_scroll_thumb_geometry_clamps_and_hides():
+    assert MenuControlledEnd._scroll_thumb(10, 100, 0, 5, 20) == (10, 25)
+    assert MenuControlledEnd._scroll_thumb(10, 100, 15, 5, 20) == (85, 25)
+    assert MenuControlledEnd._scroll_thumb(0, 20, 0, 1, 100) == (0, 6)
+    assert MenuControlledEnd._scroll_thumb(0, 100, 0, 5, 5) is None
+    assert MenuControlledEnd._scroll_thumb(0, 100, 0, 0, 20) is None
+    assert MenuControlledEnd._scroll_thumb(0, 0, 0, 5, 20) is None
+
+
+def test_list_scrollbar_geometry_pages(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree())
+    assert menu._page_count == 3
+
+    geometry = menu._list_scroll_geometry()
+    assert geometry is not None
+    x1, x2, top, length, thumb_top, thumb_h = geometry
+    assert (x1, x2, top, length) == (314, 318, 22, 164)
+    assert (thumb_top, thumb_h) == (22, 55)
+
+    menu._page_down()
+    menu._cancel_scroll_animation()
+    assert menu._list_scroll_geometry()[4] == 77
+    menu._page_down()
+    menu._cancel_scroll_animation()
+    assert menu._list_scroll_geometry()[4] == 131
+
+
+def test_list_scrollbar_hidden_for_single_page(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree(count=5))
+    assert menu._page_count == 1
+    assert menu._list_scroll_geometry() is None
+
+
+def test_list_scrollbar_pixels_modern_and_retro(tmp_path):
+    for theme_id in ("dark_pro", "win7"):
+        menu, _, _, _ = _make_menu(tmp_path, _scroll_tree())
+        menu._apply_theme(theme_id)
+        menu._page_down()
+        menu._page_down()
+        menu._cancel_scroll_animation()
+        frame = menu._compose_frame()
+        x1, x2, _, _, thumb_top, thumb_h = menu._list_scroll_geometry()
+        accent = menu._menu_theme.accent
+        surface = menu._menu_theme.surface_alt
+        border = menu._menu_theme.border
+        assert tuple(frame[thumb_top + thumb_h // 2, 317]) == accent
+        # Above the thumb: rail fill and its left border.  Sample well
+        # below the rounded top cap and above the page-2 thumb.
+        assert tuple(frame[60, 317]) == surface
+        assert tuple(frame[60, 314]) == border
+        # Anti-aliased cap pixels must not spill into the gap or margin.
+        assert tuple(frame[60, 313]) == menu._menu_theme.background
+        assert tuple(frame[60, 319]) == menu._menu_theme.background
+
+
+def test_classic_has_no_duplicate_scrollbar(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree())
+    menu._apply_theme("classic")
+    menu._page_down()
+    frame = menu._compose_frame()
+    accent = menu._menu_theme.accent
+    strip = frame[22:186, 316:319]
+    assert not np.any(np.all(strip == accent, axis=2))
+
+
+def test_tap_list_scrollbar_changes_page(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree())
+    height = menu._height
+
+    assert menu.handle_touch(0.99, 184 / height) is True
+    assert menu._current_page == 2
+    assert menu._current_index == 0
+    menu._cancel_scroll_animation()
+
+    assert menu.handle_touch(0.99, 23 / height) is True
+    assert menu._current_page == 0
+    menu._cancel_scroll_animation()
+
+    assert menu.handle_touch(0.99, 104 / height) is True
+    assert menu._current_page == 1
+    menu._cancel_scroll_animation()
+
+    # Tapping the current thumb is consumed but does not move.
+    # Page 1's thumb spans y 77..131.
+    assert menu.handle_touch(0.99, 100 / height) is True
+    assert menu._current_page == 1
+
+
+def test_tap_list_scrollbar_uses_first_enabled_row(tmp_path):
+    tree = _scroll_tree()
+    tree["camera"]["0"]["options"][5]["enable"] = False
+    menu, _, _, _ = _make_menu(tmp_path, tree)
+
+    assert menu.handle_touch(0.99, 104 / menu._height) is True
+    assert menu._current_page == 1
+    assert menu._current_index == 1
+
+
+def test_tap_list_scrollbar_ignored_when_not_scrollable(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree(count=3))
+    assert menu.handle_touch(0.99, 100 / menu._height) is False
+
+
+def test_option_editor_scrollbar(tmp_path):
+    tree = _scroll_tree(choices=9)
+    menu, _, _, _ = _make_menu(tmp_path, tree)
+    menu._jump_by_id("pick")
+    menu.select()
+    frame = menu._compose_frame()
+
+    start, visible, row_height, block_top = menu._option_list_geometry(0, 9)
+    block_height = row_height * visible
+    assert (start, visible, row_height, block_top) == (0, 5, 26, 56)
+    assert block_height == 130
+    accent = menu._menu_theme.accent
+    assert tuple(frame[block_top + 36, 317]) == accent
+
+    menu._value_temp = tree["camera"]["pick"]["options"][0]["options"][8]
+    menu._cancel_option_animation()
+    frame = menu._compose_frame()
+    assert tuple(frame[block_top + block_height - 2, 317]) == accent
+
+    menu._value_temp = tree["camera"]["pick"]["options"][0]["options"][0]
+    menu._cancel_option_animation()
+    assert menu.handle_touch(
+        0.99, (block_top + row_height * 1.5) / menu._height
+    ) is True
+    assert menu._value_temp["value"] == 1
+
+
+def test_option_editor_scrollbar_hidden_for_short_choices(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree(choices=3))
+    menu._jump_by_id("pick")
+    menu.select()
+    frame = menu._compose_frame()
+    start, visible, row_height, block_top = menu._option_list_geometry(0, 3)
+    assert tuple(frame[block_top + 5, 317]) == menu._menu_theme.background
+    assert menu.handle_touch(0.99, 100 / menu._height) is False
+
+
+def test_back_restores_parent_page_and_row(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree(submenu=True))
+    menu._page_down()
+    menu._page_down()
+    menu._current_index = 1
+    menu.select()
+    assert menu._title == "Sub"
+
+    menu.cross_press_action()
+    assert menu._title == "Root"
+    assert menu._current_page == 2
+    assert menu._current_index == 1
+
+
+def test_back_falls_back_to_enabled_row(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree(submenu=True))
+    menu._page_down()
+    menu._page_down()
+    menu._current_index = 1
+    parent = menu._option_list["0"]["options"]
+    parent[-1]["enable"] = False
+    menu.select()
+    assert menu._title == "Sub"
+
+    menu.cross_press_action()
+    assert menu._current_page == 2
+    assert menu._current_index == 0
+
+
+def test_scrollbar_thumb_animates_between_pages(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path, _scroll_tree())
+    assert menu._content_right() == 311
+
+    menu._page_down()
+    assert menu._current_page == 1
+    assert menu._animation_active() is True
+    assert menu._scroll_anim_start is not None
+
+    menu._scroll_anim_start -= menu._scroll_anim_duration / 2
+    position = menu._scroll_page_position()
+    assert 0.0 < position < 1.0
+
+    menu._scroll_anim_start -= menu._scroll_anim_duration
+    assert menu._scroll_page_position() == 1.0
+    assert menu._scroll_anim_start is None
+
+
+def test_rounded_rect_keeps_antialiasing_inside_bounds(tmp_path):
+    menu, _, _, _ = _make_menu(tmp_path)
+    frame = np.zeros((240, 320, 3), dtype=np.uint8)
+
+    menu._rounded_rect(frame, 10, 10, 60, 30, (0, 0, 255), 10)
+
+    # Anti-aliased capsule caps must not spill outside the bounding box.
+    assert not frame[:10].any()
+    assert not frame[31:].any()
+    assert not frame[:, :10].any()
+    assert not frame[:, 61:].any()
+    assert frame[20, 35].any()

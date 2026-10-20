@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -40,6 +41,185 @@ from chandelier.ui.decorators import (
 # The 320x240 / 30 fps preview mode exposes 1..66666 us.  Longer presets are
 # applied only while the still configuration is active.
 _PREVIEW_MAX_EXPOSURE = 66_666
+
+# Standard third-stop shutter speeds (seconds) and ISO values.  Auto
+# exposure reports a slightly different exposure/gain every frame; snapping
+# the status-bar text to these stops keeps adjacent fractions from flickering.
+_SHUTTER_STOPS = (
+    1 / 100000,
+    1 / 80000,
+    1 / 64000,
+    1 / 50000,
+    1 / 40000,
+    1 / 32000,
+    1 / 25000,
+    1 / 20000,
+    1 / 16000,
+    1 / 12500,
+    1 / 10000,
+    1 / 8000,
+    1 / 6400,
+    1 / 5000,
+    1 / 4000,
+    1 / 3200,
+    1 / 2500,
+    1 / 2000,
+    1 / 1600,
+    1 / 1250,
+    1 / 1000,
+    1 / 800,
+    1 / 640,
+    1 / 500,
+    1 / 400,
+    1 / 320,
+    1 / 250,
+    1 / 200,
+    1 / 160,
+    1 / 125,
+    1 / 100,
+    1 / 80,
+    1 / 60,
+    1 / 50,
+    1 / 40,
+    1 / 30,
+    1 / 25,
+    1 / 20,
+    1 / 15,
+    1 / 13,
+    1 / 10,
+    1 / 8,
+    1 / 6,
+    1 / 5,
+    1 / 4,
+    0.3,
+    0.4,
+    0.5,
+    0.6,
+    0.8,
+    1.0,
+    1.3,
+    1.6,
+    2.0,
+    2.5,
+    3.2,
+    4.0,
+    5.0,
+    6.0,
+    8.0,
+    10.0,
+    13.0,
+    15.0,
+    20.0,
+    25.0,
+    30.0,
+)
+_ISO_STOPS = (
+    100,
+    125,
+    160,
+    200,
+    250,
+    320,
+    400,
+    500,
+    640,
+    800,
+    1000,
+    1250,
+    1600,
+    2000,
+    2500,
+    3200,
+    4000,
+    5000,
+    6400,
+    8000,
+    10000,
+    12800,
+    16000,
+    20000,
+    25600,
+    32000,
+)
+_SHUTTER_LOG_STOPS = tuple(math.log(value) for value in _SHUTTER_STOPS)
+_ISO_LOG_STOPS = tuple(math.log(value) for value in _ISO_STOPS)
+# Half of a third-stop interval (the nearest-stop boundary) plus a 1/12-stop
+# hysteresis margin.  The displayed value only changes after the measurement
+# moves a little past the midpoint between two standard stops.
+_STOP_DEADBAND = math.log(2.0) / 6.0 + math.log(2.0) / 12.0
+# A different nearest stop must persist for this many status refreshes before
+# it replaces the text.  At 30 fps this is ~0.2 s, which ignores alternating
+# readings (HDR short/long frames) while still following real scene changes.
+_STABLE_FRAMES = 6
+
+# Manual-focus peaking: binary Canny edges coloured by cycling through the
+# RGB channels, one colour per preview frame.
+_MF_RGB_CYCLE = ((0, 0, 255), (255, 0, 0), (0, 255, 0))
+
+
+def _nearest_stop_index(value: float, log_stops: tuple) -> int:
+    """Return the index of the nearest standard stop in log space."""
+
+    level = math.log(value)
+    best = 0
+    best_distance = abs(log_stops[0] - level)
+    for index in range(1, len(log_stops)):
+        distance = abs(log_stops[index] - level)
+        if distance < best_distance:
+            best = index
+            best_distance = distance
+    return best
+
+
+@dataclass
+class _StableStop:
+    """Hysteresis and debounce for one displayed third-stop value.
+
+    ``shown`` is the index currently rendered.  A different nearest stop is
+    adopted only after it has been observed for ``_STABLE_FRAMES``
+    consecutive refreshes; readings that alternate between two values never
+    satisfy that condition, so the text stays put.
+    """
+
+    stops: tuple
+    log_stops: tuple
+    shown: int | None = None
+    candidate: int | None = None
+    frames: int = 0
+
+    def update(self, value):
+        """Return the stop value to display, or ``None`` when unavailable."""
+
+        if value is None or value <= 0:
+            self.shown = self.candidate = None
+            self.frames = 0
+            return None
+        level = math.log(value)
+        if (
+            self.shown is not None
+            and abs(level - self.log_stops[self.shown])
+            <= _STOP_DEADBAND
+        ):
+            # Inside the deadband: keep the current text and forget any
+            # pending candidate.
+            self.candidate, self.frames = None, 0
+            return self.stops[self.shown]
+        nearest = _nearest_stop_index(value, self.log_stops)
+        if self.shown is None:
+            # First reading: show it immediately instead of blanking the
+            # field for the debounce interval.
+            self.shown, self.candidate, self.frames = nearest, None, 0
+            return self.stops[nearest]
+        if nearest == self.shown:
+            self.candidate, self.frames = None, 0
+            return self.stops[self.shown]
+        if nearest == self.candidate:
+            self.frames += 1
+        else:
+            self.candidate, self.frames = nearest, 1
+        if self.frames >= _STABLE_FRAMES:
+            self.shown, self.candidate, self.frames = nearest, None, 0
+        return self.stops[self.shown]
 
 
 # (menu option id, localizer worker field, cast, optional scale factor).
@@ -106,6 +286,8 @@ class CameraState:
     focus_position: float = 500.0
     af_speed: int = 0
     af_range: int = 0
+    af_pause: bool = False
+    touch_focus: bool = True
     manual_focus: bool = False  # derived from focus_mode
 
     # Manual controls
@@ -116,6 +298,11 @@ class CameraState:
     contrast: float = 1.0
     sharpness: float = 1.0
     hdr_mode: int = 0
+    exposure_priority: int = 0
+    noise_reduction: int = -1  # Auto: use per-mode Picamera2 defaults
+    preview_fps: int = 30
+    colour_temperature: int = 0  # 0 = AWB; >0 fixed Kelvin
+    isp_stats: bool = False
 
     countdown: float = 0.0
 
@@ -155,6 +342,12 @@ class CameraControlledEnd(ControlledEnd):
         # Smooths the autofocus figure of merit so the metadata page and
         # bar chart do not twitch with every frame.
         self._filter = SlidingWindowFilter(10)
+        # Debounced third-stop displays: auto-exposure jitter and alternating
+        # HDR frames must not make the status text flicker.
+        self._shutter_display = _StableStop(
+            _SHUTTER_STOPS, _SHUTTER_LOG_STOPS
+        )
+        self._iso_display = _StableStop(_ISO_STOPS, _ISO_LOG_STOPS)
         self._capture_session: CaptureSession | None = None
         self._mf_edges: np.ndarray | None = None
 
@@ -166,7 +359,7 @@ class CameraControlledEnd(ControlledEnd):
         )
         self._toast = Toast(self._screen.width, self._screen.height)
         self._decorator = SimpleText(
-            [self._metadata_page],
+            [self._metadata_page, self._diagnostics_page],
             height=self._screen.height,
             padding=(10, 20, 0, 0),
             font_height=10,
@@ -262,6 +455,81 @@ class CameraControlledEnd(ControlledEnd):
         return report
 
     @staticmethod
+    def _format_timestamp(value, wall: bool = False) -> str:
+        """Format a libcamera nanosecond timestamp for the diagnostics page."""
+
+        if value is None:
+            return "n/a"
+        try:
+            seconds = float(value) / 1_000_000_000.0
+        except (TypeError, ValueError):
+            return str(value)
+        if not wall:
+            # SensorTimestamp is monotonic nanoseconds; seconds are easier
+            # to compare across frames than a huge raw integer.
+            return f"{seconds:.2f}s"
+        try:
+            clock = time.strftime(
+                "%H:%M:%S", time.localtime(seconds)
+            )
+        except (OverflowError, OSError, ValueError):
+            return str(value)
+        millis = int((seconds % 1.0) * 1000)
+        return f"{clock}.{millis:03d}"
+
+    def _diagnostics_page(self):
+        """Second metadata page with AF/AE state and sensor timestamps."""
+
+        metadata = self._camera.metadata
+        if not metadata:
+            return None
+        report = {
+            "AeState {}": {
+                0: "Idle",
+                1: "Searching",
+                2: "Converged",
+            }.get(metadata.get("AeState"), metadata.get("AeState", "n/a")),
+            "AfState {}": {
+                0: "Idle",
+                1: "Scanning",
+                2: "Focused",
+                3: "Failed",
+            }.get(metadata.get("AfState"), metadata.get("AfState", "n/a")),
+            "AfPause {}": {
+                0: "Running",
+                1: "Pausing",
+                2: "Paused",
+            }.get(
+                metadata.get("AfPauseState"),
+                metadata.get("AfPauseState", "n/a"),
+            ),
+            "Stats {}": "ON" if self._state.isp_stats else "OFF",
+        }
+        temperature = metadata.get("SensorTemperature")
+        if temperature is not None:
+            try:
+                report["SensorT {}"] = f"{float(temperature):.1f}C"
+            except (TypeError, ValueError):
+                report["SensorT {}"] = str(temperature)
+        if metadata.get("SensorTimestamp") is not None:
+            report["SensorTs {}"] = self._format_timestamp(
+                metadata["SensorTimestamp"]
+            )
+        if metadata.get("FrameWallClock") is not None:
+            report["WallClock {}"] = self._format_timestamp(
+                metadata["FrameWallClock"], wall=True
+            )
+        stats = metadata.get("PispStatsOutput")
+        if stats is None:
+            stats = metadata.get("Bcm2835StatsOutput")
+        if stats is not None:
+            try:
+                report["StatsBlob {}"] = len(stats)
+            except TypeError:
+                report["StatsBlob {}"] = "on"
+        return report
+
+    @staticmethod
     def _iso_value(metadata) -> int | None:
         """Approximate ISO the same way Picamera2 writes EXIF ISO.
 
@@ -281,13 +549,24 @@ class CameraControlledEnd(ControlledEnd):
         return max(1, int(round(total_gain * 100)))
 
     @staticmethod
+    def _format_shutter_stop(seconds: float) -> str:
+        """Render one standard shutter stop in the status-bar style."""
+
+        if seconds >= 1.0:
+            return f"{seconds:g}s"
+        return f"1/{max(1, round(1.0 / seconds))}"
+
+    @staticmethod
     def _format_shutter(microseconds: float) -> str:
-        """Render an exposure time in the compact status-bar style."""
-        if microseconds >= 1_000_000:
-            return f"{microseconds / 1_000_000:.1f}s"
-        if microseconds >= 1000:
-            return f"1/{max(1, round(1_000_000 / microseconds))}"
-        return f"{microseconds:.0f}us"
+        """Render an exposure time as the nearest standard shutter stop."""
+
+        seconds = float(microseconds) / 1_000_000.0
+        if seconds <= 0:
+            return "0"
+        index = _nearest_stop_index(seconds, _SHUTTER_LOG_STOPS)
+        return CameraControlledEnd._format_shutter_stop(
+            _SHUTTER_STOPS[index]
+        )
 
     # ------------------------------------------------------------------
     # Button actions
@@ -439,6 +718,7 @@ class CameraControlledEnd(ControlledEnd):
             # libcamera ignores or rejects them while AE is enabled.
             exposure_time = None
             analogue_gain = None
+            exposure_priority = 0
             if not auto_expose:
                 exposure_time = int(
                     self._option_value_or(
@@ -450,6 +730,24 @@ class CameraControlledEnd(ControlledEnd):
                         MenuOptionId.ANALOGUE_GAIN.value, 1.0
                     )
                 )
+            elif not self._state.ae_lock:
+                # Mirror the semi-auto preview mode in the still.
+                exposure_priority = self._state.exposure_priority
+                if exposure_priority == 1:
+                    exposure_time = int(
+                        self._option_value_or(
+                            MenuOptionId.EXPOSURE_TIME.value, 10000
+                        )
+                    )
+                elif exposure_priority == 2:
+                    analogue_gain = float(
+                        self._option_value_or(
+                            MenuOptionId.ANALOGUE_GAIN.value, 1.0
+                        )
+                    )
+            apply_watermark = bool(
+                self._option_value_or(MenuOptionId.WATERMARK.value, False)
+            )
             self._camera.save_frame(
                 file_path=path,
                 extension=extension,
@@ -467,14 +765,16 @@ class CameraControlledEnd(ControlledEnd):
                 ),
                 exposure_time=exposure_time,
                 analogue_gain=analogue_gain,
+                exposure_priority=exposure_priority,
+                # The callback receives the actual encoded frame, so the
+                # badge also works for full-resolution captures where the
+                # menu reports (0, 0) instead of a pixel size.
+                watermark=(
+                    lambda image: Watermark(
+                        image.shape[1], image.shape[0]
+                    ).decorate(image)
+                ) if apply_watermark else None,
             )
-            # Re-read the saved file so the watermark is baked into the
-            # stored image at full resolution, not just the preview.
-            if self._option_value_or(MenuOptionId.WATERMARK.value, False):
-                frame = cv2.imread(f"{path}.{extension}")
-                if frame is not None and width > 0 and height > 0:
-                    Watermark(width, height).decorate(frame)
-                    cv2.imwrite(f"{path}.{extension}", frame)
         except Exception:
             self._logger.exception("photo capture failed")
             self._toast.set_text("CAPTURE FAILED")
@@ -558,6 +858,27 @@ class CameraControlledEnd(ControlledEnd):
     def center_press_action(self) -> None:
         self._trigger_focus()
 
+    def handle_touch(self, x: float, y: float) -> bool:
+        """Focus on a normalized tap position from the web preview."""
+
+        state = self._state
+        if not state.touch_focus or state.focus_mode == 0:
+            return False
+        if state.is_busy or (
+            self._capture_session is not None
+            and self._capture_session.active
+        ) or state.record_timestamp is not None:
+            return False
+
+        window = self._camera.focus_window_at(x, y)
+        if not self._camera.set_af_window(window):
+            # Fall back to the default metering region on older pipelines.
+            self._camera.set_af_window(None)
+        if state.focus_mode == 1:
+            self._camera.trigger_autofocus()
+        self._toast.set_text("AF")
+        return True
+
     def rotary_encoder_clockwise(self) -> None:
         pass
 
@@ -586,6 +907,16 @@ class CameraControlledEnd(ControlledEnd):
         The branches are mutually exclusive: libcamera exposes EV,
         metering and flicker controls only while AE is enabled.
         """
+        exposure = int(
+            self._option_value_or(
+                MenuOptionId.EXPOSURE_TIME.value, 10000
+            )
+        )
+        gain = float(
+            self._option_value_or(
+                MenuOptionId.ANALOGUE_GAIN.value, 1.0
+            )
+        )
         if bool(self._option_value_or(MenuOptionId.AUTO_EXPOSE.value, True)):
             self._camera.set_ae_enable(True)
             self._camera.set_ae_constraint_mode(
@@ -606,17 +937,14 @@ class CameraControlledEnd(ControlledEnd):
                 self._option_value_or(MenuOptionId.FLICKER_PERIOD.value, 0)
             )
             self._camera.set_exposure_value(self._state.exp_compensation)
+            # Shutter/gain priority keeps AE active for the other half.
+            if not self._camera.set_exposure_priority(
+                self._state.exposure_priority,
+                min(exposure, _PREVIEW_MAX_EXPOSURE),
+                gain,
+            ):
+                self._camera.set_exposure_priority(0, exposure, gain)
         else:
-            exposure = int(
-                self._option_value_or(
-                    MenuOptionId.EXPOSURE_TIME.value, 10000
-                )
-            )
-            gain = float(
-                self._option_value_or(
-                    MenuOptionId.ANALOGUE_GAIN.value, 1.0
-                )
-            )
             self._camera.set_ae_enable(False)
             # Keep the live preview responsive; longer presets are applied
             # when the still configuration is active.
@@ -626,6 +954,13 @@ class CameraControlledEnd(ControlledEnd):
 
     def _apply_awb(self) -> None:
         """Apply automatic white balance or fixed red/blue colour gains."""
+        # An explicit Kelvin value takes precedence over AWB modes and
+        # manual gains; fall through when the pipeline rejects it.
+        if self._state.colour_temperature > 0:
+            if self._camera.set_colour_temperature(
+                self._state.colour_temperature
+            ):
+                return
         if bool(self._option_value_or(MenuOptionId.AWB.value, True)):
             self._camera.set_awb_enable(True)
             self._camera.set_awb_mode(
@@ -639,13 +974,33 @@ class CameraControlledEnd(ControlledEnd):
             )
 
     def _apply_focus(self) -> None:
-        """Push the AF mode plus its speed and range tuning."""
+        """Push the AF mode plus its speed, range and pause state."""
         state = self._state
         self._camera.set_af_speed(state.af_speed)
         self._camera.set_af_range(state.af_range)
         self._camera.set_focus_mode(
             state.focus_mode, int(state.focus_position)
         )
+        # AfPause is only valid for continuous AF; sending Resume in the
+        # other modes makes libcamera log a warning.
+        if state.focus_mode == 2:
+            self._camera.set_af_pause(state.af_pause)
+        # A custom AF window only makes sense while touch focus and AF are
+        # active; otherwise restore full-frame metering.
+        if not state.touch_focus or state.focus_mode == 0:
+            self._camera.set_af_window(None)
+
+    def _apply_preview_fps(self) -> None:
+        """Cap the preview frame rate from the Display menu."""
+        self._camera.set_frame_rate(self._state.preview_fps)
+
+    def _apply_noise_reduction(self) -> None:
+        """Apply the selected denoise mode (negative means Auto)."""
+        self._camera.set_noise_reduction(self._state.noise_reduction)
+
+    def _apply_stats_output(self) -> None:
+        """Enable or disable ISP statistics in metadata."""
+        self._camera.set_stats_output(self._state.isp_stats)
 
     def _apply_manual_controls(self) -> None:
         """Apply colour controls and the optional AE/AWB locks."""
@@ -663,7 +1018,11 @@ class CameraControlledEnd(ControlledEnd):
         awb = bool(self._option_value_or(MenuOptionId.AWB.value, True))
         if self._state.ae_lock and auto_expose:
             self._camera.set_ae_lock(True)
-        if self._state.awb_lock and awb:
+        if (
+            self._state.awb_lock
+            and awb
+            and self._state.colour_temperature <= 0
+        ):
             self._camera.set_awb_lock(True)
 
     def _apply_preview_server(self, value=None) -> None:
@@ -884,13 +1243,39 @@ class CameraControlledEnd(ControlledEnd):
         state.hdr_mode = int(
             self._option_value_or(MenuOptionId.HDR.value, 0)
         )
+        state.exposure_priority = int(
+            self._option_value_or(MenuOptionId.EXPOSURE_PRIORITY.value, 0)
+        )
+        state.noise_reduction = int(
+            self._option_value_or(MenuOptionId.NOISE_REDUCTION.value, -1)
+        )
+        state.af_pause = bool(
+            self._option_value_or(MenuOptionId.AF_PAUSE.value, False)
+        )
+        state.touch_focus = bool(
+            self._option_value_or(MenuOptionId.TOUCH_FOCUS.value, True)
+        )
+        state.preview_fps = int(
+            self._option_value_or(MenuOptionId.PREVIEW_FPS.value, 30)
+        )
+        state.colour_temperature = int(
+            self._option_value_or(
+                MenuOptionId.COLOUR_TEMPERATURE.value, 0
+            )
+        )
+        state.isp_stats = bool(
+            self._option_value_or(MenuOptionId.ISP_STATS.value, False)
+        )
 
         self._read_overlay_settings()
         self._read_capture_settings()
+        self._apply_preview_fps()
         self._apply_hdr()
         self._apply_exposure()
+        self._apply_noise_reduction()
         self._apply_awb()
         self._apply_manual_controls()
+        self._apply_stats_output()
         self._apply_focus()
         self._apply_localizer_settings()
         self._apply_preview_server()
@@ -959,6 +1344,13 @@ class CameraControlledEnd(ControlledEnd):
             bottom += band
         return left, top, right, bottom
 
+    def _build_mf_mask(self, frame: np.ndarray) -> np.ndarray:
+        """Build the binary Canny peaking mask from the raw preview frame."""
+
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        return cv2.Canny(blurred, threshold1=70, threshold2=400)
+
     def _status_items(self) -> list:
         """Build status-bar items from the capture mode and metadata."""
         metadata = self._camera.metadata or {}
@@ -987,6 +1379,23 @@ class CameraControlledEnd(ControlledEnd):
         focus_role = (
             "warning" if self._state.focus_mode == 0 else "success"
         )
+        if self._state.focus_mode != 0:
+            # libcamera's live AF state is more informative than the static
+            # mode token: show scanning/focused/failed directly.
+            af_state = metadata.get("AfState")
+            try:
+                af_state = int(af_state)
+            except (TypeError, ValueError):
+                af_state = None
+            if af_state is not None:
+                focus_role = {
+                    0: "dim",
+                    1: "warning",
+                    2: "success",
+                    3: "danger",
+                }.get(af_state, focus_role)
+            if self._state.af_pause:
+                focus_role = "warning"
         if side_mode:
             focus_value = {
                 "MF": "MF",
@@ -1007,15 +1416,24 @@ class CameraControlledEnd(ControlledEnd):
                     value_role="dim",
                 )
             )
-        if metadata.get("ExposureTime") is not None:
-            shutter = self._format_shutter(metadata["ExposureTime"])
+        exposure = metadata.get("ExposureTime")
+        seconds = None
+        if exposure is not None:
+            try:
+                seconds = float(exposure) / 1_000_000.0
+            except (TypeError, ValueError):
+                pass
+        shutter_stop = self._shutter_display.update(seconds)
+        if shutter_stop is not None:
+            shutter = self._format_shutter_stop(shutter_stop)
             if side_mode:
                 items.append(StatusItem("SH", shutter))
             else:
                 items.append((shutter, "text"))
         iso = self._iso_value(metadata)
-        if iso is not None:
-            items.append(StatusItem("ISO", str(iso)))
+        iso_stop = self._iso_display.update(iso)
+        if iso_stop is not None:
+            items.append(StatusItem("ISO", str(iso_stop)))
         if metadata.get("ColourTemperature") is not None:
             kelvin = int(metadata["ColourTemperature"])
             if side_mode:
@@ -1077,10 +1495,10 @@ class CameraControlledEnd(ControlledEnd):
     def main_loop(self):
         """Yield decorated preview frames for the controller.
 
-        Overlay order is deliberate: the histogram samples the raw frame
-        before any drawing, geometry overlays come next, and informational
-        overlays (chart, status, badge) are painted last.  Focus peaking
-        is applied after them so its coloured edges stay visible.
+        Overlay order is deliberate: focus peaking and the histogram both
+        read the raw scene, then the peaking colour is composited before the
+        UI overlays so grid, zebra, text and the status bar are never
+        mistaken for scene edges.  Informational overlays paint last.
         """
         # preview() blocks until libcamera delivers a frame, so the loop
         # is paced by the sensor rather than by a sleep interval.
@@ -1113,11 +1531,47 @@ class CameraControlledEnd(ControlledEnd):
                 if len(self._filter):
                     self._bar_chart.add_data(int(self._filter.calc()))
 
+            # Focus peaking must read the raw scene, before any UI overlay
+            # is drawn; otherwise grid lines, zebra marks and text become
+            # "edges" and light up together with the image.
+            edges = None
+            if self._state.mf_assist:
+                # Refreshing the edge map at 10 fps is plenty and saves two
+                # out of three Canny passes.
+                if (
+                    self._mf_edges is None
+                    or self._mf_edges.shape != frame.shape[:2]
+                    or index % 3 == 0
+                ):
+                    self._mf_edges = self._build_mf_mask(frame)
+                edges = self._mf_edges
+            else:
+                self._mf_edges = None
+
             # Compute the histogram from the raw preview, before UI overlays
             # (grid, zebra, status text) skew the pixel distribution.
             if self._state.show_hist:
                 self._hist.set_padding(self._histogram_padding())
                 self._hist.decorate(frame)
+
+            # Composite peaking after the histogram so scene edges stay
+            # visible across the histogram box.  The edge map still comes
+            # from the raw frame, so the box and its bars never create
+            # peaking; grid/status overlays are drawn later and cover the
+            # coloured lines instead of being highlighted by them.
+            if (
+                self._state.mf_assist
+                and edges is not None
+                and cv2.countNonZero(edges)
+            ):
+                colorful_edges = np.zeros(
+                    (edges.shape[0], edges.shape[1], 3),
+                    dtype=np.uint8,
+                )
+                colorful_edges[edges != 0] = _MF_RGB_CYCLE[
+                    index % len(_MF_RGB_CYCLE)
+                ]
+                frame = cv2.addWeighted(frame, 1, colorful_edges, 1.0, 0)
 
             # Geometry overlays are cheap and pixel-independent, so they
             # can be redrawn every frame.
@@ -1169,37 +1623,5 @@ class CameraControlledEnd(ControlledEnd):
                 or self._toast.visible
             ):
                 self._toast.decorate(frame)
-
-            edges = None
-            if self._state.mf_assist:
-                # Focus peaking is a visual aid; refreshing the edge map at
-                # 10 fps is plenty and saves two out of three Canny passes.
-                if self._mf_edges is None or index % 3 == 0:
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-                    self._mf_edges = cv2.Canny(
-                        blurred, threshold1=70, threshold2=400
-                    )
-                edges = self._mf_edges
-            else:
-                self._mf_edges = None
-
-            if (
-                self._state.mf_assist
-                and edges is not None
-                and cv2.countNonZero(edges)
-            ):
-                colorful_edges = np.zeros(
-                    (edges.shape[0], edges.shape[1], 3), dtype=np.uint8
-                )
-                # Cycle colours each refresh so the peaking overlay looks
-                # alive even though the edge map updates at 10 fps.
-                if index % 3 == 0:
-                    colorful_edges[edges != 0] = (0, 0, 255)
-                elif index % 3 == 1:
-                    colorful_edges[edges != 0] = (255, 0, 0)
-                else:
-                    colorful_edges[edges != 0] = (0, 255, 0)
-                frame = cv2.addWeighted(frame, 1, colorful_edges, 1.0, 0)
 
             yield frame

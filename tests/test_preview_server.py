@@ -351,13 +351,22 @@ def test_remote_control_and_screen_switch():
     server.set_screen_handler(screens.append)
     try:
         assert _post(server, "/control", {"action": "up"}) == 200
+        assert _post(
+            server, "/control", {"action": "up", "phase": "release"}
+        ) == 200
+        assert _post(
+            server, "/control", {"action": "up", "phase": "bogus"}
+        ) == 400
         assert _post(server, "/screen", {"id": "gallery"}) == 200
         assert _post(server, "/control", {"action": "nope"}) == 400
         assert _post(server, "/screen", {"id": "nope"}) == 200
     finally:
         server.stop()
 
-    assert actions == [(Action.UP, Phase.PRESS)]
+    assert actions == [
+        (Action.UP, Phase.PRESS),
+        (Action.UP, Phase.RELEASE),
+    ]
     assert screens == ["gallery", "nope"]
 
 
@@ -873,3 +882,27 @@ def test_gallery_ignores_symlinks_outside_the_media_directory(tmp_path):
         assert payload == {"count": 0, "items": []}
     finally:
         server.stop()
+
+
+def test_index_page_maps_all_physical_buttons():
+    server = _start()
+    try:
+        _, _, body = _get(server, "/")
+    finally:
+        server.stop()
+    html = body.decode("utf-8")
+    for action in (
+        "up",
+        "down",
+        "left",
+        "right",
+        "center",
+        "circle",
+        "square",
+        "cross",
+        "shutter",
+        "rotary_clockwise",
+        "rotary_counter_clockwise",
+        "rotary_select",
+    ):
+        assert f'data-action="{action}"' in html

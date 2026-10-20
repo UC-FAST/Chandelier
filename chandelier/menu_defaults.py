@@ -19,6 +19,56 @@ from chandelier.themes import DEFAULT_THEME_ID, THEME_CHOICES
 # migration helpers below, so keep values deep-copied when inserting.
 DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
     "camera": {
+        # These fragments only list options added after the sections first
+        # shipped; `_append_missing_options` merges them into old trees.
+        "exposure": {
+            "title": "Exposure",
+            "options": [
+                {
+                    "id": "exposure_priority",
+                    "content": "Exposure Priority",
+                    "type": "option",
+                    "icon": "speed",
+                    "value": {"content": "Auto", "value": 0},
+                    "options": [
+                        {"content": "Auto", "value": 0},
+                        {"content": "Shutter Priority", "value": 1},
+                        {"content": "Gain Priority", "value": 2},
+                    ],
+                    "enable_if": {"id": "auto_expose", "value": True},
+                },
+                {
+                    "id": "noise_reduction",
+                    "content": "Noise Reduction",
+                    "type": "option",
+                    "icon": "sparkle",
+                    "value": {"content": "Auto", "value": -1},
+                    "options": [
+                        {"content": "Auto", "value": -1},
+                        {"content": "Off", "value": 0},
+                        {"content": "Fast", "value": 1},
+                        {"content": "High Quality", "value": 2},
+                    ],
+                },
+            ],
+        },
+        "white_balance": {
+            "title": "White Balance",
+            "options": [
+                {
+                    "id": "colour_temperature",
+                    "content": "Colour Temperature",
+                    "type": "numeral",
+                    "icon": "temperature",
+                    "value": 0,
+                    "min": 0,
+                    "max": 10000,
+                    "step": 100,
+                    "step_options": [100, 500, 1000],
+                    "format": "kelvin",
+                },
+            ],
+        },
         "display": {
             "title": "Display",
             "options": [
@@ -63,6 +113,19 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                         {"content": "Off", "value": "off"},
                         {"content": "Top + Bottom", "value": "top_bottom"},
                         {"content": "Sides", "value": "sides"},
+                    ],
+                },
+                {
+                    "id": "preview_fps",
+                    "content": "Preview FPS",
+                    "type": "option",
+                    "icon": "speed",
+                    "value": {"content": "30 fps", "value": 30},
+                    "options": [
+                        {"content": "30 fps", "value": 30},
+                        {"content": "15 fps", "value": 15},
+                        {"content": "10 fps", "value": 10},
+                        {"content": "5 fps", "value": 5},
                     ],
                 },
             ],
@@ -187,6 +250,13 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "max": 4.0,
                     "step": 0.1,
                 },
+                {
+                    "id": "isp_stats",
+                    "content": "ISP Stats",
+                    "type": "bool",
+                    "icon": "hist",
+                    "value": False,
+                },
             ],
         },
         "focus": {
@@ -212,6 +282,14 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                     "badge": "AF",
                     "receiver": "camera",
                     "value": "autofocus",
+                },
+                {
+                    "id": "af_pause",
+                    "content": "AF Pause",
+                    "type": "bool",
+                    "icon": "pause",
+                    "value": False,
+                    "enable_if": {"id": "af_mode", "value": 2},
                 },
                 {
                     "id": "focus_position",
@@ -249,6 +327,13 @@ DEFAULT_SECTIONS: dict[str, dict[str, dict[str, Any]]] = {
                         {"content": "Macro", "value": 1},
                         {"content": "Full", "value": 2},
                     ],
+                },
+                {
+                    "id": "touch_focus",
+                    "content": "Touch Focus",
+                    "type": "bool",
+                    "icon": "crosshair",
+                    "value": True,
                 },
                 {
                     "id": "mf_assist",
@@ -601,23 +686,32 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
         ],
         "exposure": [
             "auto_expose",
+            "exposure_priority",
             "show_hist",
             "exposure_time",
             "analogue_gain",
             "exposure_mode",
             "metering_mode",
             "constraint_mode",
+            "noise_reduction",
             "flicker",
         ],
         "focus": [
             "af_mode",
             "af_trigger",
+            "af_pause",
             "focus_position",
             "af_speed",
             "af_range",
+            "touch_focus",
             "mf_assist",
         ],
-        "white_balance": ["awb", "awb_mode", "color_gains"],
+        "white_balance": [
+            "awb",
+            "awb_mode",
+            "colour_temperature",
+            "color_gains",
+        ],
         "color_gains": ["red_gain", "blue_gain"],
         "flicker_menu": ["flicker_mode", "flicker_period"],
         "display": [
@@ -626,6 +720,7 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
             "show_zebra",
             "zebra_threshold",
             "status_bar_position",
+            "preview_fps",
         ],
         "capture": [
             "capture_mode",
@@ -641,6 +736,7 @@ PREFERRED_ORDER: dict[str, dict[str, list[str]]] = {
             "saturation",
             "contrast",
             "sharpness",
+            "isp_stats",
         ],
         "record": ["record_mode", "record_resolution"],
         "localizer": [
@@ -1076,6 +1172,10 @@ def _migrate_camera_control_ranges(tree: dict[str, Any]) -> bool:
         "analogue_gain": {
             "step": 0.5,
             "step_options": [0.1, 0.5, 1],
+            "enable_if": [
+                {"id": "auto_expose", "value": False},
+                {"id": "exposure_priority", "value": 2},
+            ],
         },
         "red_gain": {
             "min": 0.1,
@@ -1092,6 +1192,14 @@ def _migrate_camera_control_ranges(tree: dict[str, Any]) -> bool:
         },
         "hdr": {
             "enable_if": {"id": "auto_expose", "value": True},
+        },
+        # Full manual exposure uses both fixed values; the semi-auto modes
+        # fix only the matching half, so the controls must stay editable.
+        "exposure_time": {
+            "enable_if": [
+                {"id": "auto_expose", "value": False},
+                {"id": "exposure_priority", "value": 1},
+            ],
         },
     }
 

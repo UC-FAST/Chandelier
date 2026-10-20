@@ -7,12 +7,14 @@ and re-apply the current digital zoom/crop.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
+import math
 import os
 import threading
 import time
-from typing import Iterator
+from typing import Callable, Iterator
 
 import cv2
 import numpy as np
@@ -74,6 +76,12 @@ class CameraDevice:
         # Controls a sensor/PiSP variant rejected; avoid retrying them.
         self._unsupported_controls: set[str] = set()
         self._focus_mode: int | None = None
+        # None means "Auto": preview/still/video use Picamera2's per-mode
+        # defaults (Minimal / HighQuality / Fast).
+        self._noise_reduction_mode: int | None = None
+        # StatsOutputEnable must be present when the stream is configured;
+        # a runtime set_controls() alone does not produce PispStatsOutput.
+        self._stats_output = False
         self._metadata: dict | None = None
         # Placeholder frame, replaced by the first preview() iteration.
         self._frame = np.zeros(
@@ -114,17 +122,44 @@ class CameraDevice:
         self._apply_zoom()
         logger.debug("zoom set to %.2f", self._digital_zoom)
 
-    def _apply_zoom(self) -> None:
+    def current_crop(self) -> tuple[int, int, int, int]:
+        """Return the active sensor crop as ``(left, top, width, height)``."""
+
         w_offset, h_offset, f_width, f_height = self._base_crop
         p_width = max(1, int(f_width // self._digital_zoom))
         p_height = max(1, int(f_height // self._digital_zoom))
         # Shrink the base crop symmetrically around its centre.  ScalerCrop
         # expects [left, top, width, height] in sensor pixels.
-        offset = [
-            int((f_width - p_width) // 2 + w_offset),
-            int((f_height - p_height) // 2 + h_offset),
-        ]
-        self._set_controls({"ScalerCrop": offset + [p_width, p_height]})
+        left = int((f_width - p_width) // 2 + w_offset)
+        top = int((f_height - p_height) // 2 + h_offset)
+        return left, top, p_width, p_height
+
+    def _apply_zoom(self) -> None:
+        self._set_controls({"ScalerCrop": list(self.current_crop())})
+
+    def focus_window_at(
+        self, nx: float, ny: float, fraction: float = 0.2
+    ) -> tuple[int, int, int, int]:
+        """Map a normalized preview tap to a sensor-pixel AF window.
+
+        The preview is a straight resize of the current crop, so the
+        normalized coordinates map linearly into ``current_crop()``.
+        """
+
+        left, top, width, height = self.current_crop()
+        nx = max(0.0, min(1.0, float(nx)))
+        ny = max(0.0, min(1.0, float(ny)))
+        window_width = max(1, int(round(width * fraction)))
+        window_height = max(1, int(round(height * fraction)))
+        centre_x = left + int(round(nx * width))
+        centre_y = top + int(round(ny * height))
+        window_left = max(
+            left, min(centre_x - window_width // 2, left + width - window_width)
+        )
+        window_top = max(
+            top, min(centre_y - window_height // 2, top + height - window_height)
+        )
+        return window_left, window_top, window_width, window_height
 
     def brightness(self, brightness: float) -> None:
         """Set the brightness control, clipped to libcamera's -1..1 range."""
@@ -210,6 +245,10 @@ class CameraDevice:
                 "AeEnable": False,
                 "ExposureTime": exposure_time,
                 "AnalogueGain": analogue_gain,
+                # libcamera 0.7 uses the per-control modes; keep the
+                # deprecated AeEnable for older pipelines.
+                "ExposureTimeMode": 1,
+                "AnalogueGainMode": 1,
             }
         )
 
@@ -233,6 +272,134 @@ class CameraDevice:
         """Apply an exposure-compensation offset in stops."""
         self._set_controls({"ExposureValue": float(value)})
 
+    def set_exposure_priority(
+        self,
+        priority: int,
+        exposure_time: int,
+        analogue_gain: float,
+    ) -> bool:
+        """Fix shutter or gain while letting the other half track AE.
+
+        ``1`` locks the exposure time (shutter priority), ``2`` locks the
+        analogue gain (gain priority).  Returns False when the pipeline does
+        not expose the per-control mode needed for the request.
+        """
+
+        priority = int(priority)
+        if priority == 1:
+            if not self._control_supported("ExposureTimeMode"):
+                logger.warning("shutter priority is not supported")
+                return False
+            self._set_controls(
+                {
+                    "AeEnable": True,
+                    "AnalogueGainMode": 0,
+                    "ExposureTime": max(1, int(exposure_time)),
+                    "ExposureTimeMode": 1,
+                }
+            )
+            return "ExposureTimeMode" in self._controls
+        if priority == 2:
+            if not self._control_supported("AnalogueGainMode"):
+                logger.warning("gain priority is not supported")
+                return False
+            self._set_controls(
+                {
+                    "AeEnable": True,
+                    "ExposureTimeMode": 0,
+                    "AnalogueGain": float(analogue_gain),
+                    "AnalogueGainMode": 1,
+                }
+            )
+            return "AnalogueGainMode" in self._controls
+        self._set_controls(
+            {
+                "AeEnable": True,
+                "ExposureTimeMode": 0,
+                "AnalogueGainMode": 0,
+            }
+        )
+        return True
+
+    def set_frame_rate(self, fps: float) -> None:
+        """Cap the preview frame rate via ``FrameDurationLimits``."""
+
+        if fps <= 0:
+            return
+        period = max(33_333, int(round(1_000_000 / float(fps))))
+        # Leave the upper bound at Picamera2's preview default so AE can
+        # still use longer frames in low light.
+        self._set_controls(
+            {"FrameDurationLimits": (period, max(period, 83_333))}
+        )
+
+    def set_noise_reduction(self, mode: int) -> None:
+        """Select NoiseReductionMode, or Auto (negative) for mode defaults."""
+
+        mode = int(mode)
+        if mode < 0:
+            self._noise_reduction_mode = None
+            # Clear an explicit value; stills/video pop the key so their
+            # own configuration default applies.
+            self._controls.pop("NoiseReductionMode", None)
+            self._set_controls({"NoiseReductionMode": 3})
+            return
+        self._noise_reduction_mode = mode
+        self._set_controls({"NoiseReductionMode": mode})
+
+    def set_colour_temperature(self, kelvin: int) -> bool:
+        """Disable AWB and request a fixed colour temperature."""
+
+        kelvin = int(kelvin)
+        if kelvin <= 0:
+            return False
+        if not self._control_supported("ColourTemperature"):
+            logger.warning("fixed colour temperature is not supported")
+            return False
+        self._set_controls({"AwbEnable": False})
+        self._set_controls({"ColourTemperature": kelvin})
+        if "ColourTemperature" not in self._controls:
+            # Rejected by the pipeline: hand white balance back to AWB.
+            self._set_controls({"AwbEnable": True})
+            return False
+        return True
+
+    def set_stats_output(self, enable: bool) -> None:
+        """Enable or disable ISP statistics in the request metadata.
+
+        The control only takes effect when it is part of the stream
+        configuration, so changing it reconfigures the preview briefly.
+        """
+
+        enable = bool(enable)
+        if enable == self._stats_output:
+            return
+        self._stats_output = enable
+        if not enable:
+            # The pipeline is sticky: a runtime False clears the output
+            # without reconfiguring the stream.
+            self._set_controls({"StatsOutputEnable": False})
+            return
+        # Enabling requires the control at stream-configuration time.
+        # Drop any cached False first so re-applying controls after the
+        # switch cannot immediately turn the output off again.
+        self._controls.pop("StatsOutputEnable", None)
+        self._preview_config = self._cam.create_preview_configuration(
+            main={
+                "size": (
+                    self._config.preview_width,
+                    self._config.preview_height,
+                ),
+                "format": "RGB888",
+            },
+            controls={"StatsOutputEnable": True},
+        )
+        with self._lock:
+            self._cam.switch_mode(self._preview_config)
+            self._refresh_base_crop()
+            self._cam.set_controls(self._controls)
+            self._apply_zoom()
+
     def set_image_controls(
         self,
         *,
@@ -254,7 +421,13 @@ class CameraDevice:
     def set_ae_lock(self, enable: bool) -> None:
         """Freeze the current exposure/gain, or hand control back to AE."""
         if not enable:
-            self._set_controls({"AeEnable": True})
+            self._set_controls(
+                {
+                    "AeEnable": True,
+                    "ExposureTimeMode": 0,
+                    "AnalogueGainMode": 0,
+                }
+            )
             return
         # Use the latest preview metadata; capturing a fresh metadata set is
         # a fallback for callers that lock before the first preview frame.
@@ -264,7 +437,11 @@ class CameraDevice:
                 metadata = self._cam.capture_metadata()
             except Exception:
                 metadata = {}
-        controls = {"AeEnable": False}
+        controls = {
+            "AeEnable": False,
+            "ExposureTimeMode": 1,
+            "AnalogueGainMode": 1,
+        }
         if "ExposureTime" in metadata:
             controls["ExposureTime"] = metadata["ExposureTime"]
         if "AnalogueGain" in metadata:
@@ -297,7 +474,11 @@ class CameraDevice:
 
         # Normalise any unexpected menu value to continuous AF.
         mode = 0 if int(mode) <= 0 else 1 if int(mode) == 1 else 2
-        changed = mode != self._focus_mode
+        previous = self._focus_mode
+        changed = mode != previous
+        if previous == 2 and mode != 2:
+            # Leaving AF-C must not leave the AF algorithm paused.
+            self._set_controls({"AfPause": 2}, force=True)
         self._focus_mode = mode
         if mode == 0:
             self._set_controls(
@@ -330,6 +511,32 @@ class CameraDevice:
     def set_af_range(self, af_range: int) -> None:
         """Set libcamera's ``AfRange`` enum (normal, macro or full)."""
         self._set_controls({"AfRange": int(af_range)})
+
+    def set_af_pause(self, paused: bool) -> None:
+        """Pause continuous AF or resume it (one-shot transitions)."""
+
+        self._set_controls(
+            {"AfPause": 0 if paused else 2}, force=True
+        )
+
+    def set_af_window(self, window: tuple | None) -> bool:
+        """Focus on a sensor-pixel rectangle, or restore full-frame metering."""
+
+        if window is None:
+            self._set_controls({"AfMetering": 0})
+            return True
+        if not self._control_supported("AfWindows"):
+            logger.warning("AF windows are not supported")
+            return False
+        x, y, width, height = (int(value) for value in window)
+        self._set_controls(
+            {
+                "AfMetering": 1,
+                # Picamera2 converts each 4-tuple to a libcamera Rectangle.
+                "AfWindows": [(x, y, width, height)],
+            }
+        )
+        return "AfWindows" in self._controls
 
     def trigger_autofocus(self) -> None:
         """Request a single AF scan from the tuning algorithm."""
@@ -401,6 +608,8 @@ class CameraDevice:
         save_raw: bool = False,
         exposure_time: int | None = None,
         analogue_gain: float | None = None,
+        exposure_priority: int = 0,
+        watermark: Callable[[np.ndarray], None] | None = None,
     ) -> None:
         """Capture a still image to ``file_path``.
 
@@ -408,6 +617,10 @@ class CameraDevice:
         resolution.  ``save_raw`` also writes a DNG, and ``save_metadata``
         writes libcamera metadata as JSON next to the image.  Manual
         exposure is in microseconds and disables AE for this capture.
+        ``exposure_priority`` selects shutter priority (1) or gain priority
+        (2), matching the preview menu.  ``watermark`` is applied to the
+        rendered frame before it is encoded, so JPEG EXIF survives; it is
+        never applied to the raw DNG.
         """
         directory = os.path.dirname(file_path)
         if directory:
@@ -421,7 +634,34 @@ class CameraDevice:
         # frame.  libcamera needs the frame duration to be at least as long
         # as the exposure.
         still_controls = {}
-        if exposure_time is not None:
+        priority = int(exposure_priority)
+        if priority == 1 and exposure_time is not None:
+            exposure_time = max(1, int(exposure_time))
+            frame_duration = max(33_333, exposure_time + 50_000)
+            if self._control_supported("ExposureTimeMode"):
+                still_controls = {
+                    "AeEnable": True,
+                    "ExposureTimeMode": 1,
+                    "AnalogueGainMode": 0,
+                    "ExposureTime": exposure_time,
+                    "FrameDurationLimits": (
+                        frame_duration,
+                        frame_duration,
+                    ),
+                }
+            else:
+                logger.warning("shutter priority still is not supported")
+        elif priority == 2 and analogue_gain is not None:
+            if self._control_supported("AnalogueGainMode"):
+                still_controls = {
+                    "AeEnable": True,
+                    "ExposureTimeMode": 0,
+                    "AnalogueGainMode": 1,
+                    "AnalogueGain": float(analogue_gain),
+                }
+            else:
+                logger.warning("gain priority still is not supported")
+        elif exposure_time is not None:
             exposure_time = max(1, int(exposure_time))
             # The frame duration must cover the exposure plus readout and
             # scheduling overhead; 33.3 ms is a 30 fps floor.
@@ -432,6 +672,8 @@ class CameraDevice:
                 "AnalogueGain": float(
                     analogue_gain if analogue_gain is not None else 1.0
                 ),
+                "ExposureTimeMode": 1,
+                "AnalogueGainMode": 1,
                 "FrameDurationLimits": (
                     frame_duration,
                     frame_duration,
@@ -455,6 +697,11 @@ class CameraDevice:
                 self._cam.switch_mode(still_config)
                 self._refresh_base_crop()
                 controls = dict(self._controls)
+                # The preview frame-rate cap must never clamp a still.
+                controls.pop("FrameDurationLimits", None)
+                if self._noise_reduction_mode is None:
+                    # Let the still configuration's HighQuality default win.
+                    controls.pop("NoiseReductionMode", None)
                 if still_controls:
                     # The still configuration already carries these; do not
                     # overwrite them with the stale cached preview values.
@@ -462,6 +709,8 @@ class CameraDevice:
                         "AeEnable",
                         "ExposureTime",
                         "AnalogueGain",
+                        "ExposureTimeMode",
+                        "AnalogueGainMode",
                         "FrameDurationLimits",
                     ):
                         controls.pop(key, None)
@@ -477,18 +726,270 @@ class CameraDevice:
                     frame = request.make_array("main")
                     if frame.ndim == 3 and frame.shape[2] == 4:
                         frame = frame[..., :3]
-                    cv2.imwrite(f"{file_path}.{extension}", frame)
+                    if watermark is not None:
+                        # Burn the badge in before encoding.  Re-reading and
+                        # rewriting the file afterwards would strip EXIF and
+                        # could leave a truncated image if the second write
+                        # fails.
+                        try:
+                            watermark(frame)
+                        except Exception:
+                            logger.exception("watermark failed")
+                    self._write_still(
+                        frame,
+                        f"{file_path}.{extension}",
+                        extension,
+                        request.get_metadata(),
+                    )
                 if save_metadata:
                     with open(f"{file_path}.json", "w", encoding="utf-8") as f:
                         json.dump(request.get_metadata(), f, indent=4)
                 if save_raw:
-                    # The DNG carries the raw Bayer frame and its metadata.
-                    request.save_dng(f"{file_path}.dng")
+                    # The DNG carries the raw Bayer frame and its metadata,
+                    # including a JSON description of the full metadata set.
+                    self._save_dng_with_metadata(
+                        request, f"{file_path}.dng"
+                    )
             finally:
                 # Always return to preview mode, even if the capture failed.
                 if request is not None:
                     request.release()
                 self._restore_preview()
+
+    def _camera_model(self) -> str:
+        """Return the sensor/model name used in EXIF Make/Model tags."""
+
+        properties = getattr(self._cam, "camera_properties", None) or {}
+        model = (
+            properties.get("Model")
+            if isinstance(properties, dict)
+            else None
+        )
+        if not model:
+            model = getattr(self._cam, "camera", None)
+        return str(model or "Raspberry Pi Camera")
+
+    @staticmethod
+    def _exif_bytes(
+        metadata: dict, model: str, width: int, height: int
+    ) -> bytes | None:
+        """Build standard EXIF tags for a still, or ``None`` on failure.
+
+        ``piexif`` is a Raspberry Pi dependency, but importing it lazily
+        keeps this module usable on hosts that only run the UI tests.  EXIF
+        is best effort: a malformed metadata value must never prevent the
+        photo from being written.
+        """
+
+        try:
+            import piexif
+        except ImportError:
+            logger.warning("piexif is not installed; saving without EXIF")
+            return None
+
+        timestamp = metadata.get("DateTime")
+        if not isinstance(timestamp, str) or not timestamp:
+            timestamp = time.strftime("%Y:%m:%d %H:%M:%S")
+
+        zeroth = {
+            piexif.ImageIFD.Make: "Raspberry Pi",
+            piexif.ImageIFD.Model: model,
+            piexif.ImageIFD.Software: "Chandelier",
+            piexif.ImageIFD.DateTime: timestamp,
+            piexif.ImageIFD.Orientation: 1,
+        }
+        exif: dict[int, object] = {
+            piexif.ExifIFD.DateTimeOriginal: timestamp,
+            piexif.ExifIFD.DateTimeDigitized: timestamp,
+            piexif.ExifIFD.ColorSpace: 1,
+            piexif.ExifIFD.PixelXDimension: int(width),
+            piexif.ExifIFD.PixelYDimension: int(height),
+            piexif.ExifIFD.Flash: 0,
+        }
+
+        try:
+            exposure = int(metadata.get("ExposureTime", 0))
+        except (TypeError, ValueError):
+            exposure = 0
+        if exposure > 0:
+            divisor = math.gcd(exposure, 1_000_000)
+            exif[piexif.ExifIFD.ExposureTime] = (
+                exposure // divisor,
+                1_000_000 // divisor,
+            )
+
+        try:
+            total_gain = float(metadata.get("AnalogueGain", 0)) * float(
+                metadata.get("DigitalGain", 1.0)
+            )
+        except (TypeError, ValueError):
+            total_gain = 0.0
+        if total_gain > 0:
+            exif[piexif.ExifIFD.ISOSpeedRatings] = int(
+                round(total_gain * 100)
+            )
+
+        try:
+            return piexif.dump(
+                {
+                    "0th": zeroth,
+                    "Exif": exif,
+                    "GPS": {},
+                    "1st": {},
+                    "thumbnail": None,
+                }
+            )
+        except Exception:
+            logger.warning("failed to build still EXIF", exc_info=True)
+            return None
+
+    def _write_still(
+        self,
+        frame: np.ndarray,
+        path: str,
+        extension: str,
+        metadata: dict,
+    ) -> None:
+        """Write ``frame`` with EXIF when the container supports it.
+
+        JPEG goes through OpenCV's encoder and gets EXIF spliced in with
+        ``piexif``.  PNG/TIFF/BMP use Pillow, which writes an eXIf chunk or
+        TIFF tags directly; BMP carries no EXIF.  Writes go to a temporary
+        file first so a failed encode cannot truncate an existing photo.
+        """
+
+        extension = str(extension).lower().lstrip(".")
+        exif = self._exif_bytes(
+            metadata,
+            self._camera_model(),
+            frame.shape[1],
+            frame.shape[0],
+        )
+        options = getattr(self._cam, "options", None) or {}
+        temp = f"{path}.part"
+        try:
+            if extension in {"jpg", "jpeg"}:
+                quality = int(options.get("quality", 95))
+                ok, encoded = cv2.imencode(
+                    ".jpg",
+                    frame,
+                    [int(cv2.IMWRITE_JPEG_QUALITY), quality],
+                )
+                if not ok:
+                    raise OSError("JPEG encoding failed")
+                data = encoded.tobytes()
+                if exif:
+                    try:
+                        import piexif
+
+                        tagged = io.BytesIO()
+                        piexif.insert(exif, data, tagged)
+                        data = tagged.getvalue()
+                    except Exception:
+                        logger.warning(
+                            "failed to insert JPEG EXIF", exc_info=True
+                        )
+                with open(temp, "wb") as handle:
+                    handle.write(data)
+            elif extension in {"png", "tif", "tiff", "bmp"}:
+                from PIL import Image
+
+                image = Image.fromarray(
+                    cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                )
+                format_name = {
+                    "png": "PNG",
+                    "tif": "TIFF",
+                    "tiff": "TIFF",
+                    "bmp": "BMP",
+                }[extension]
+                save_args: dict = {"format": format_name}
+                # BMP has no EXIF container; Pillow rejects the kwarg.
+                if exif and extension != "bmp":
+                    save_args["exif"] = exif
+                if extension == "png":
+                    save_args["compress_level"] = int(
+                        options.get("compress_level", 3)
+                    )
+                try:
+                    image.save(temp, **save_args)
+                except Exception:
+                    if not save_args.get("exif"):
+                        raise
+                    # Never lose the photo because the metadata writer
+                    # rejected a tag.
+                    logger.warning(
+                        "EXIF write failed for %s; retrying without it",
+                        extension,
+                        exc_info=True,
+                    )
+                    image.save(temp, format=format_name)
+            else:
+                temp = f"{path}.part.{extension}"
+                if not cv2.imwrite(temp, frame):
+                    raise OSError("image write failed")
+            os.replace(temp, path)
+        except Exception:
+            try:
+                os.unlink(temp)
+            except OSError:
+                pass
+            raise
+
+    @staticmethod
+    def _metadata_description(metadata: dict) -> str:
+        """Encode the full metadata dict as an ASCII TIFF description."""
+
+        # ensure_ascii keeps the TIFF Ascii tag encodable even if a future
+        # metadata value contains non-ASCII text.
+        return json.dumps(
+            metadata,
+            default=str,
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+
+    def _save_dng_with_metadata(self, request, file_path: str) -> None:
+        """Write the raw stream as DNG with the metadata dict embedded.
+
+        Picamera2's own ``save_dng`` only writes exposure/ISO/gain tags.
+        This mirrors its writer and adds ``ImageDescription`` (the full
+        metadata as ASCII JSON) plus standard DateTime tags.
+        """
+
+        # Imported lazily so this module remains importable off-device.
+        from picamera2.sensor_format import SensorFormat
+        from pidng.camdefs import Picamera2Camera
+        from pidng.core import PICAM2DNG
+        from pidng.dng import Tag
+
+        metadata = request.get_metadata()
+        config = dict(request.config["raw"])
+        buffer = request.make_buffer("raw")
+        raw = self._cam.helpers._make_array_shared(buffer, config)
+        fmt = SensorFormat(config["format"])
+        if fmt.packing == "PISP_COMP1":
+            raw = self._cam.helpers.decompress(raw)
+            fmt.bit_depth = 16
+            config["format"] = fmt.unpacked
+            config["stride"] = raw.shape[1]
+            config["framesize"] = raw.shape[0] * raw.shape[1]
+
+        model = self._cam.camera_properties.get("Model") or "Picamera2"
+        camera = Picamera2Camera(config, metadata, model)
+        camera.tags.set(
+            Tag.ImageDescription, self._metadata_description(metadata)
+        )
+        timestamp = time.strftime("%Y:%m:%d %H:%M:%S", time.localtime())
+        camera.tags.set(Tag.DateTime, timestamp)
+        camera.tags.set(Tag.DateTimeOriginal, timestamp)
+
+        writer = PICAM2DNG(camera)
+        writer.options(
+            compress=self._cam.options.get("compress_level", 0)
+        )
+        with open(file_path, "wb") as handle:
+            writer.convert(raw, file=handle)
 
     def exposure_capture(
         self, exposure_time: int, width: int, height: int
@@ -507,7 +1008,13 @@ class CameraDevice:
         with self._lock:
             self._cam.switch_mode(config)
             self._refresh_base_crop()
-            self._cam.set_controls(self._controls)
+            controls = dict(self._controls)
+            # The preview FPS cap (and Auto noise reduction) must not clamp
+            # or override the still configuration used for metering.
+            controls.pop("FrameDurationLimits", None)
+            if self._noise_reduction_mode is None:
+                controls.pop("NoiseReductionMode", None)
+            self._cam.set_controls(controls)
             self._apply_zoom()
             # Gain 1.0 isolates the exposure time; metadata reports the
             # value the sensor actually applied.
@@ -568,7 +1075,12 @@ class CameraDevice:
             finally:
                 request.release()
             self._cam.configure(video_config)
-            self._cam.set_controls(self._controls)
+            controls = dict(self._controls)
+            # Video uses its own fixed 30 fps and Fast NR defaults.
+            controls.pop("FrameDurationLimits", None)
+            if self._noise_reduction_mode is None:
+                controls.pop("NoiseReductionMode", None)
+            self._cam.set_controls(controls)
             self._apply_zoom()
             # Single AF does not track on its own; re-run it in video mode.
             if self._focus_mode == 1:

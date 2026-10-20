@@ -667,9 +667,11 @@ def test_shipped_focus_menu_has_af_controls():
     assert focus_ids == [
         "af_mode",
         "af_trigger",
+        "af_pause",
         "focus_position",
         "af_speed",
         "af_range",
+        "touch_focus",
         "mf_assist",
     ]
     manual_ids = [
@@ -960,3 +962,130 @@ def test_validation_rejects_bad_option_and_numeral():
     errors = validate_menu_config(tree)
     assert any("options list" in error for error in errors)
     assert any("within" in error for error in errors)
+
+
+def test_shipped_menu_has_new_camera_controls():
+    tree = load_menu_config()
+    options = {}
+    for section in tree["camera"].values():
+        if isinstance(section, dict):
+            for option in section.get("options", []):
+                options[option.get("id")] = option
+
+    assert options["exposure_priority"]["value"]["value"] == 0
+    assert {
+        choice["value"]
+        for choice in options["exposure_priority"]["options"]
+    } == {0, 1, 2}
+    assert options["noise_reduction"]["value"]["value"] == -1
+    assert options["af_pause"]["value"] is False
+    assert options["af_pause"]["enable_if"] == {
+        "id": "af_mode",
+        "value": 2,
+    }
+    assert options["touch_focus"]["value"] is True
+    assert options["preview_fps"]["value"]["value"] == 30
+    assert options["colour_temperature"]["value"] == 0
+    assert options["colour_temperature"]["format"] == "kelvin"
+    assert options["isp_stats"]["value"] is False
+    assert options["exposure_time"]["enable_if"] == [
+        {"id": "auto_expose", "value": False},
+        {"id": "exposure_priority", "value": 1},
+    ]
+    assert options["analogue_gain"]["enable_if"] == [
+        {"id": "auto_expose", "value": False},
+        {"id": "exposure_priority", "value": 2},
+    ]
+
+
+def test_ensure_menu_defaults_adds_new_camera_controls():
+    from chandelier.menu_defaults import ensure_menu_defaults
+
+    tree = {
+        "camera": {
+            "0": {"title": "Root", "options": []},
+            "exposure": {
+                "title": "Exposure",
+                "options": [
+                    {
+                        "id": "auto_expose",
+                        "content": "Auto Expose",
+                        "type": "bool",
+                        "icon": "sun",
+                        "value": True,
+                    },
+                    {
+                        "id": "exposure_priority",
+                        "content": "Exposure Priority",
+                        "type": "option",
+                        "icon": "speed",
+                        "value": {
+                            "content": "Gain Priority",
+                            "value": 2,
+                        },
+                        "options": [
+                            {"content": "Auto", "value": 0},
+                            {"content": "Shutter Priority", "value": 1},
+                            {"content": "Gain Priority", "value": 2},
+                        ],
+                    },
+                    {
+                        "id": "exposure_time",
+                        "content": "Exposure Time",
+                        "type": "option",
+                        "icon": "shutter",
+                        "value": {"content": "1/125", "value": 8000},
+                        "options": [
+                            {"content": "1/125", "value": 8000},
+                        ],
+                    },
+                ],
+            },
+            "focus": {"title": "Focus", "options": []},
+            "white_balance": {
+                "title": "White Balance",
+                "options": [
+                    {
+                        "id": "colour_temperature",
+                        "content": "Colour Temperature",
+                        "type": "numeral",
+                        "icon": "temperature",
+                        "value": 5600,
+                        "min": 0,
+                        "max": 10000,
+                        "step": 100,
+                    },
+                ],
+            },
+            "display": {"title": "Display", "options": []},
+            "manual": {"title": "Manual", "options": []},
+        },
+        "gallery": {"0": {"title": "Gallery", "options": []}},
+    }
+
+    assert ensure_menu_defaults(tree) is True
+    sections = {
+        name: [option["id"] for option in section["options"]]
+        for name, section in tree["camera"].items()
+        if isinstance(section, dict) and "options" in section
+    }
+    assert "exposure_priority" in sections["exposure"]
+    assert "noise_reduction" in sections["exposure"]
+    assert "af_pause" in sections["focus"]
+    assert "touch_focus" in sections["focus"]
+    assert "preview_fps" in sections["display"]
+    assert "isp_stats" in sections["manual"]
+
+    options = {}
+    for section in tree["camera"].values():
+        for option in section.get("options", []):
+            options[option.get("id")] = option
+    # User-selected values survive the migration.
+    assert options["exposure_priority"]["value"]["value"] == 2
+    assert options["colour_temperature"]["value"] == 5600
+    assert options["exposure_time"]["value"]["value"] == 8000
+    assert options["exposure_time"]["enable_if"] == [
+        {"id": "auto_expose", "value": False},
+        {"id": "exposure_priority", "value": 1},
+    ]
+    assert ensure_menu_defaults(tree) is False

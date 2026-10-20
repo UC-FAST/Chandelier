@@ -282,6 +282,35 @@
                     "icon": "sun"
                 },
                 {
+                    "id": "exposure_priority",
+                    "content": "Exposure Priority",
+                    "type": "option",
+                    "icon": "speed",
+                    "value": {
+                        "content": "Auto",
+                        "value": 0
+                    },
+                    "options": [
+                        {
+                            "content": "Auto",
+                            "value": 0
+                        },
+                        {
+                            "content": "Shutter Priority",
+                            "value": 1
+                        },
+                        {
+                            "content": "Gain Priority",
+                            "value": 2
+                        }
+                    ],
+                    "enable_if": {
+                        "id": "auto_expose",
+                        "value": true
+                    },
+                    "enable": true
+                },
+                {
                     "id": "show_hist",
                     "content": "Show Histogram",
                     "type": "bool",
@@ -387,7 +416,17 @@
                             "value": 30000000
                         }
                     ],
-                    "icon": "shutter"
+                    "icon": "shutter",
+                    "enable_if": [
+                        {
+                            "id": "auto_expose",
+                            "value": false
+                        },
+                        {
+                            "id": "exposure_priority",
+                            "value": 1
+                        }
+                    ]
                 },
                 {
                     "id": "analogue_gain",
@@ -403,7 +442,17 @@
                         1
                     ],
                     "enable": false,
-                    "icon": "gain"
+                    "icon": "gain",
+                    "enable_if": [
+                        {
+                            "id": "auto_expose",
+                            "value": false
+                        },
+                        {
+                            "id": "exposure_priority",
+                            "value": 2
+                        }
+                    ]
                 },
                 {
                     "id": "exposure_mode",
@@ -491,6 +540,35 @@
                     ],
                     "enable": true,
                     "icon": "lock"
+                },
+                {
+                    "id": "noise_reduction",
+                    "content": "Noise Reduction",
+                    "type": "option",
+                    "icon": "sparkle",
+                    "value": {
+                        "content": "Auto",
+                        "value": -1
+                    },
+                    "options": [
+                        {
+                            "content": "Auto",
+                            "value": -1
+                        },
+                        {
+                            "content": "Off",
+                            "value": 0
+                        },
+                        {
+                            "content": "Fast",
+                            "value": 1
+                        },
+                        {
+                            "content": "High Quality",
+                            "value": 2
+                        }
+                    ],
+                    "enable": true
                 },
                 {
                     "id": "flicker",
@@ -584,6 +662,18 @@
                     "value": "autofocus"
                 },
                 {
+                    "id": "af_pause",
+                    "content": "AF Pause",
+                    "type": "bool",
+                    "icon": "pause",
+                    "value": false,
+                    "enable_if": {
+                        "id": "af_mode",
+                        "value": 2
+                    },
+                    "enable": true
+                },
+                {
                     "id": "focus_position",
                     "content": "Focus Pos",
                     "type": "numeral",
@@ -649,10 +739,17 @@
                     ]
                 },
                 {
+                    "id": "touch_focus",
+                    "content": "Touch Focus",
+                    "type": "bool",
+                    "icon": "crosshair",
+                    "value": true
+                },
+                {
                     "id": "mf_assist",
                     "content": "MF Assist",
                     "type": "bool",
-                    "value": false,
+                    "value": true,
                     "icon": "focus"
                 }
             ]
@@ -717,6 +814,22 @@
                     ],
                     "enable": true,
                     "icon": "wb"
+                },
+                {
+                    "id": "colour_temperature",
+                    "content": "Colour Temperature",
+                    "type": "numeral",
+                    "icon": "temperature",
+                    "value": 0,
+                    "min": 0,
+                    "max": 10000,
+                    "step": 100,
+                    "step_options": [
+                        100,
+                        500,
+                        1000
+                    ],
+                    "format": "kelvin"
                 },
                 {
                     "id": "color_gains",
@@ -820,6 +933,35 @@
                             "value": "sides"
                         }
                     ]
+                },
+                {
+                    "id": "preview_fps",
+                    "content": "Preview FPS",
+                    "type": "option",
+                    "icon": "speed",
+                    "value": {
+                        "content": "30 fps",
+                        "value": 30
+                    },
+                    "options": [
+                        {
+                            "content": "30 fps",
+                            "value": 30
+                        },
+                        {
+                            "content": "15 fps",
+                            "value": 15
+                        },
+                        {
+                            "content": "10 fps",
+                            "value": 10
+                        },
+                        {
+                            "content": "5 fps",
+                            "value": 5
+                        }
+                    ],
+                    "enable": true
                 }
             ]
         },
@@ -965,6 +1107,13 @@
                     "min": 0.0,
                     "max": 4.0,
                     "step": 0.1
+                },
+                {
+                    "id": "isp_stats",
+                    "content": "ISP Stats",
+                    "type": "bool",
+                    "icon": "hist",
+                    "value": false
                 }
             ]
         },
@@ -1253,8 +1402,8 @@
                     "type": "option",
                     "icon": "theme",
                     "value": {
-                        "content": "Dark Pro",
-                        "value": "dark_pro"
+                        "content": "Decade",
+                        "value": "decade"
                     },
                     "options": [
                         {
@@ -1292,6 +1441,10 @@
                         {
                             "content": "Aero",
                             "value": "aero"
+                        },
+                        {
+                            "content": "Decade",
+                            "value": "decade"
                         }
                     ]
                 },
